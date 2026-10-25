@@ -27,6 +27,8 @@ let pending = [];          // photos picked for the next message: [base64 jpeg]
 const quirks = { think: {}, photoParts: 'nested' };   // request shapes learned at run time
 let liveNote = '';         // shown in the loader while waiting, e.g. for the free limit
 let turnStarted = 0;
+let hiddenDuringTurn = false;   // iOS pauses a web app in the background and drops its connections
+let resumePending = false;
 
 // A short event log (no message text or keys) kept on the phone, shown in Settings → More → Show log.
 let events = (() => { try { return JSON.parse(localStorage.getItem('nexus.log') || '[]'); } catch { return []; } })();
@@ -180,34 +182,45 @@ async function submit(e) {
   pending = [];
   renderAttachments();
   notice = null;
+  resumePending = false;
+  repair(chat.history);   // a new message leaves an unfinished earlier answer behind
   chat.history.push({ role: 'user', parts, _time: Date.now() });
   renderAll();
   scrollToEnd();
   await runAgent();
 }
 
-async function runAgent() {
+async function runAgent(resumes = 0) {
   busy = true;
   controller = new AbortController();
+  hiddenDuringTurn = document.visibilityState === 'hidden';
   turnStarted = Date.now();
-  liveNote = '';
+  liveNote = resumes ? 'Reconnecting' : '';
   updateSend();
   renderLive();
   const turn = { model: settings.model, fellBack: false, stripSignatures: false, waits: 0, round: 0 };
+  let current = null;   // the reply being written, dropped if its request fails
+  let aborted = false;
+  let resume = false;
   try {
     const r = await loadRepo();
     const system = await buildSystem(r);
     for (let round = 0; round < 12; round++) {
       turn.round = round + 1;
       const reply = { role: 'model', parts: [] };
+      current = reply;
       chat.history.push(reply);
       await callModel(reply, system, turn);
+      current = null;
       if (!reply.parts.length) {
         chat.history.pop();
         throw new Error('Gemini sent an empty reply. Try again.');
       }
       const calls = reply.parts.filter((p) => p.functionCall);
-      if (!calls.length) break;
+      if (!calls.length) {
+        Object.assign(reply, { _time: Date.now(), _took: Math.round((Date.now() - turnStarted) / 1000) });
+        break;
+      }
       const results = { role: 'user', parts: [] };
       chat.history.push(results);
       for (const p of calls) {
@@ -220,12 +233,21 @@ async function runAgent() {
     }
     note(`answer done in ${secondsSince(turnStarted)}s`);
   } catch (err) {
-    if (controller.signal.aborted) {
+    aborted = controller.signal.aborted && !(err?.status === 'timeout');
+    if (aborted) {
       notice = { kind: 'note', text: 'Stopped.' };
       note('stopped by user');
     } else {
-      notice = { kind: 'error', text: friendly(err), detail: `${err.status ?? ''} ${err.message}`.trim(), retry: true };
-      note(`failed: ${err.status ?? ''} ${String(err.message).slice(0, 300)}`);
+      // Drop the half-written reply; tool results that finished stay, so a retry continues from them.
+      if (current && chat.history[chat.history.length - 1] === current) chat.history.pop();
+      const dropped = err instanceof TypeError || err?.status === 'timeout' || err?.name === 'AbortError';
+      if (hiddenDuringTurn && dropped && resumes < 2) {
+        resume = true;
+        note('connection dropped while in the background; will continue');
+      } else {
+        notice = { kind: 'error', text: friendly(err), detail: `${err.status ?? ''} ${err.message}`.trim(), retry: true };
+        note(`failed: ${err.status ?? ''} ${String(err.message).slice(0, 300)}`);
+      }
     }
     console.error(err);
   } finally {
@@ -233,26 +255,38 @@ async function runAgent() {
     controller = null;
     liveNote = '';
     if (repo && !repoLoading) setStatus(readyText(repo));
-    repair(chat.history);
+    repair(chat.history, !aborted);
     updateSend();
     await saveChat();
     renderAll();
     if (nearBottom(400)) scrollToEnd();
   }
+  if (resume) {
+    if (document.visibilityState === 'visible') runAgent(resumes + 1);
+    else resumePending = true;   // continue as soon as the app is open again
+  }
 }
 
-// Drop empty replies and tool calls that never got results, so the next request is valid.
-function repair(history) {
+// Make the history valid for the next request: drop empty replies and tool calls without results.
+// With keepResults, a finished set of tool results stays so the answer can continue from it.
+function repair(history, keepResults = false) {
   while (history.length) {
     const last = history[history.length - 1];
-    if (last.role === 'model' && !last.parts.length) history.pop();
-    else if (last.role === 'user' && !isUserMessage(last) && !last.parts.length) history.pop();
-    else if (last.role === 'model' && last.parts.some((p) => p.functionCall)) history.pop();
-    else if (last.role === 'user' && !isUserMessage(last) && last.parts.length) {
-      // Results arrived but no final answer: drop the call and its results together.
+    const prev = history[history.length - 2];
+    if (last.role === 'model' && !last.parts.length) {
+      history.pop();
+    } else if (last.role === 'user' && !isUserMessage(last) && !last.parts.length) {
+      history.pop();
+    } else if (last.role === 'model' && last.parts.some((p) => p.functionCall)) {
+      history.pop();
+    } else if (last.role === 'user' && !isUserMessage(last)) {
+      const complete = prev?.role === 'model' && prev.parts.filter((p) => p.functionCall).length === last.parts.length;
+      if (keepResults && complete) break;
       history.pop();
       if (history[history.length - 1]?.role === 'model') history.pop();
-    } else break;
+    } else {
+      break;
+    }
   }
 }
 
@@ -556,6 +590,15 @@ function renderLive() {
   });
 }
 
+// "9:41 PM" for today, "24 Oct, 9:41 PM" for other days, in the phone's own 12/24-hour style.
+function clock(t) {
+  const d = new Date(t);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString()
+    ? time
+    : `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, ${time}`;
+}
+
 function renderExchange({ user, steps }, live) {
   const text = userText(user);
   const photos = user.parts.filter((p) => p.inlineData)
@@ -564,6 +607,8 @@ function renderExchange({ user, steps }, live) {
   const answers = [];
   const notes = [];
   let thoughts = '';
+  let answeredAt = 0;
+  let took = 0;
   for (const c of steps) {
     if (c.role === 'model') {
       let answer = '';
@@ -573,6 +618,8 @@ function renderExchange({ user, steps }, live) {
         else if (p.text) answer += p.text;
       }
       if (answer.trim()) answers.push(answer);
+      if (c._time) answeredAt = c._time;
+      if (c._took) took = c._took;
       if (c._model) notes.push(`Answered by ${c._model}: the main model ${c._why || 'hit its limit'}.`);
       if (c._finish) notes.push(finishNote(c._finish));
     } else {
@@ -589,12 +636,14 @@ function renderExchange({ user, steps }, live) {
   const waiting = live && (pendingAct || !streamingAnswer);
   return `<section class="exchange">
     <div class="msg user">${photos ? `<div class="photos">${photos}</div>` : ''}${text ? `<div class="text">${escapeHtml(text)}</div>` : ''}</div>
+    ${user._time ? `<p class="time sent">${escapeHtml(clock(user._time))}</p>` : ''}
     <div class="msg assistant">
       ${acts.length ? `<ul class="activity">${acts.map(renderAct).join('')}</ul>` : ''}
       ${thoughts ? `<details class="thinking"><summary>Thinking</summary><div>${renderMarkdown(thoughts)}</div></details>` : ''}
       ${answers.length ? `<div class="answer">${renderMarkdown(answers.join('\n\n'))}</div>` : ''}
       ${waiting ? `<div class="loader"><i></i><i></i><i></i><span>${escapeHtml(liveNote || (pendingAct ? actLabel(pendingAct.call) : 'Thinking'))}…</span><span class="elapsed"></span></div>` : ''}
       ${notes.map((n) => `<p class="note">${escapeHtml(n)}</p>`).join('')}
+      ${answeredAt && !live ? `<p class="time">${escapeHtml(clock(answeredAt))}${took ? ` · took ${took}s` : ''}</p>` : ''}
     </div>
   </section>`;
 }
@@ -708,8 +757,8 @@ function bindUi() {
     const chip = e.target.closest('[data-prompt]');
     if (chip) { input.value = chip.dataset.prompt; autosize(); input.focus(); return; }
     if (e.target.closest('[data-act="retry"]') && !busy) {
-      const last = chat.history.map(isUserMessage).lastIndexOf(true);
-      if (last >= 0) chat.history.length = last + 1;
+      // Continue from the last finished step (files already read stay); a half-written reply was dropped.
+      repair(chat.history, true);
       notice = null;
       renderAll();
       runAgent();
@@ -778,7 +827,17 @@ function bindUi() {
     settingsDialog.close();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && ready() && !busy) loadRepo().catch(() => {});
+    if (document.visibilityState === 'hidden') {
+      if (busy) hiddenDuringTurn = true;
+      return;
+    }
+    if (busy || !ready()) return;
+    if (resumePending) {
+      resumePending = false;
+      runAgent(1);
+      return;
+    }
+    loadRepo().catch(() => {});
   });
 }
 

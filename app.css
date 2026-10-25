@@ -109,6 +109,9 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 
 .msg.assistant { margin: 0 0 18px; overflow-wrap: anywhere; }
 
+.time { margin: 4px 0 0; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.time.sent { margin: -6px 4px 8px; text-align: right; }
+
 .activity { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 13px; color: var(--muted); }
 .activity li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 0; }
 .activity svg { width: 15px; height: 15px; flex: none; }
