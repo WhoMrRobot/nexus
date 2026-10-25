@@ -74,7 +74,8 @@ async function init() {
   }, 1000);
   await dropPinData();
   settings = loadSettings();
-  chat = await openChat(localStorage.getItem('nexus.chat'));
+  chat = newChat();   // a fresh launch always opens the home screen; earlier chats are in the chats list
+  localStorage.setItem('nexus.chat', chat.id);
   renderAll();
   updateSend();
   scrollToEnd();
@@ -798,12 +799,10 @@ function renderNotice() {
 }
 
 function emptyState() {
-  const prompts = ['What should I focus on today?', 'Summarise where everything stands.', 'I want to add a journal entry.'];
   return `<div class="empty">
     <div class="hero"><span class="hero-slot"></span></div>
     <h1>Nexus</h1>
     <p>Ask about anything in your notes, or tell me what’s new. Tap Deep for the harder questions.</p>
-    <div class="chips">${prompts.map((p) => `<button type="button" data-prompt="${escapeHtml(p)}">${escapeHtml(p)}</button>`).join('')}</div>
   </div>`;
 }
 
@@ -892,8 +891,6 @@ function bindUi() {
   });
 
   log.addEventListener('click', (e) => {
-    const chip = e.target.closest('[data-prompt]');
-    if (chip) { input.value = chip.dataset.prompt; autosize(); input.focus(); return; }
     if (e.target.closest('[data-act="retry"]') && !busy) {
       // Continue from the last finished step (files already read stay); a half-written reply was dropped.
       repair(chat.history, true);

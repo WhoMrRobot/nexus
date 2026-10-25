@@ -253,7 +253,7 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 
 /* ---------- welcome ---------- */
 
-.empty { max-width: 420px; margin: 7vh auto 0; text-align: center; }
+.empty { max-width: 420px; margin: 14vh auto 0; text-align: center; }
 .hero {
   position: relative;
   display: grid;
@@ -276,29 +276,6 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .hero .orb { position: relative; }
 .empty h1 { margin: 8px 0 6px; font-size: 30px; font-weight: 700; letter-spacing: -0.025em; }
 .empty p { margin: 0 auto 26px; max-width: 320px; font-size: 15px; color: var(--text-2); }
-.chips {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: 18px;
-  background: var(--sheen), var(--glass);
-  box-shadow: var(--rim), var(--lift);
-  text-align: left;
-}
-.chips button {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 18px;
-  border: 0;
-  border-bottom: 0.5px solid var(--line);
-  background: none;
-  font-size: 16px;
-  text-align: left;
-}
-.chips button:last-child { border-bottom: 0; }
-.chips button::after { content: "›"; color: var(--text-3); font-size: 22px; line-height: 1; }
-.chips button:active { background: var(--fill); }
 
 /* ---------- composer ---------- */
 
