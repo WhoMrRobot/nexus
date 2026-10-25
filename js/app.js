@@ -46,7 +46,7 @@ const secondsSince = (t) => ((Date.now() - t) / 1000).toFixed(1);
 
 // Two orbs: a small one in the loader (it changes with the step), a large one on the welcome screen.
 const liveOrb = new Orb({ preset: 20, px: 22 });
-const heroOrb = new Orb({ preset: 64, px: 120, state: 'searching' });
+const heroOrb = new Orb({ preset: 64, px: 64, state: 'searching' });
 
 const ICON = {
   send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
@@ -91,8 +91,11 @@ function ready() {
   return Boolean(settings.geminiKey && settings.githubToken && settings.repo);
 }
 
-function setStatus(text) {
-  statusEl.textContent = text;
+// The status line under the title shows only what needs attention; the normal "files ready" state stays quiet.
+function setStatus(text, quiet = false) {
+  statusEl.textContent = quiet ? '' : text;
+  statusEl.hidden = quiet;
+  statusEl.title = text;
 }
 
 function readyText(r) {
@@ -106,6 +109,7 @@ function fitViewport() {
   const fit = () => {
     app.style.height = `${vv.height}px`;
     app.style.transform = `translateY(${vv.offsetTop}px)`;
+    app.classList.toggle('kb', window.innerHeight - vv.height > 120);   // keyboard open: drop the home-bar gap
   };
   vv.addEventListener('resize', fit);
   vv.addEventListener('scroll', fit);
@@ -140,7 +144,7 @@ function loadRepo(force = false) {
     .then(() => {
       repo = r;
       repoLoadedAt = Date.now();
-      setStatus(readyText(r));
+      setStatus(readyText(r), true);
       note(`files: ${r.textCount} ready in ${secondsSince(started)}s`);
       return r;
     })
@@ -284,7 +288,7 @@ async function runAgent(resumes = 0) {
     busy = false;
     controller = null;
     liveNote = '';
-    if (repo && !repoLoading) setStatus(readyText(repo));
+    if (repo && !repoLoading) setStatus(readyText(repo), true);
     repair(chat.history, !aborted);
     updateSend();
     await saveChat();
@@ -646,6 +650,7 @@ function renderAll() {
   const groups = exchanges(chat.history);
   log.innerHTML = groups.length ? groups.map((g, i) => renderExchange(g, busy && i === groups.length - 1)).join('') : emptyState();
   if (notice) log.insertAdjacentHTML('beforeend', renderNotice());
+  input.placeholder = placeholder();
   placeOrbs();
 }
 
@@ -799,11 +804,17 @@ function renderNotice() {
 }
 
 function emptyState() {
+  const h = new Date().getHours();
+  const hello = h < 5 ? 'Up late?' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   return `<div class="empty">
     <div class="hero"><span class="hero-slot"></span></div>
-    <h1>Nexus</h1>
-    <p>Ask about anything in your notes, or tell me what’s new. Tap Deep for the harder questions.</p>
+    <h1>${hello}</h1>
   </div>`;
+}
+
+function placeholder() {
+  if (deepNext) return `Deep answer with ${modelLabel(settings.deepModel)}…`;
+  return chat?.history.length ? 'Reply to Nexus' : 'How can I help you today?';
 }
 
 function nearBottom(margin = 120) {
@@ -865,7 +876,7 @@ function setDeep(on) {
   const btn = $('#btn-deep');
   btn.classList.toggle('on', on);
   btn.setAttribute('aria-pressed', String(on));
-  input.placeholder = on ? `Deep answer with ${modelLabel(settings.deepModel)}…` : 'Message';
+  input.placeholder = placeholder();
 }
 
 // ---------- composer, drawer, settings ----------
@@ -931,7 +942,7 @@ function bindUi() {
     }
   });
 
-  $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-settings').addEventListener('click', () => { closeDrawer(); openSettings(); });
   $('#btn-close').addEventListener('click', () => settingsDialog.close());
   form.addEventListener('submit', (e) => {
     e.preventDefault();
