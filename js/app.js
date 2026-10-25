@@ -6,6 +6,7 @@ import { stream, checkModel } from './gemini.js';
 import * as openrouter from './openrouter.js';
 import { renderMarkdown, escapeHtml } from './markdown.js';
 import { TOOLS, INBOX, INBOX_HEADER, systemPrompt } from './prompt.js';
+import { Orb } from './orb.js';
 
 const $ = (sel) => document.querySelector(sel);
 const app = $('#app');
@@ -43,6 +44,10 @@ function note(text) {
 }
 const secondsSince = (t) => ((Date.now() - t) / 1000).toFixed(1);
 
+// Two orbs: a small one in the loader (it changes with the step), a large one on the welcome screen.
+const liveOrb = new Orb({ preset: 20, px: 22 });
+const heroOrb = new Orb({ preset: 64, px: 120, state: 'searching' });
+
 const ICON = {
   send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>',
@@ -60,6 +65,7 @@ init();
 
 async function init() {
   fitViewport();
+  floatBars();
   bindUi();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   setInterval(() => {   // seconds counter on the loader, so a slow answer is visibly still working
@@ -103,6 +109,23 @@ function fitViewport() {
   vv.addEventListener('resize', fit);
   vv.addEventListener('scroll', fit);
   fit();
+}
+
+// The top bar and the message box float over the conversation (so the glass has something to blur);
+// keep the conversation padded by their current heights, which change as the message grows.
+function floatBars() {
+  const bar = $('.bar');
+  const composer = $('#composer');
+  const pad = () => {
+    const stick = nearBottom(160);
+    log.style.paddingTop = `${bar.offsetHeight + 8}px`;
+    log.style.paddingBottom = `${composer.offsetHeight + 20}px`;
+    if (stick) scrollToEnd();
+  };
+  const watch = new ResizeObserver(pad);
+  watch.observe(bar);
+  watch.observe(composer);
+  pad();
 }
 
 function loadRepo(force = false) {
@@ -622,6 +645,26 @@ function renderAll() {
   const groups = exchanges(chat.history);
   log.innerHTML = groups.length ? groups.map((g, i) => renderExchange(g, busy && i === groups.length - 1)).join('') : emptyState();
   if (notice) log.insertAdjacentHTML('beforeend', renderNotice());
+  placeOrbs();
+}
+
+// Put the orb canvases into their slots (the same canvas each time, so the animation runs on).
+function placeOrbs() {
+  const slot = log.querySelector('.orb-slot');
+  if (slot) {
+    liveOrb.setState(slot.dataset.state || 'working');
+    slot.replaceWith(liveOrb.canvas);
+    liveOrb.start();
+  } else {
+    liveOrb.stop();
+  }
+  const hero = log.querySelector('.hero-slot');
+  if (hero) {
+    hero.replaceWith(heroOrb.canvas);
+    heroOrb.start();
+  } else {
+    heroOrb.stop();
+  }
 }
 
 let liveQueued = false;
@@ -639,6 +682,7 @@ function renderLive() {
       const opened = nodes[nodes.length - 1].querySelector('details.thinking')?.open;
       nodes[nodes.length - 1].outerHTML = html;
       if (opened) log.querySelector('.exchange:last-of-type details.thinking')?.setAttribute('open', '');
+      placeOrbs();
     }
     else renderAll();
     if (near) scrollToEnd();
@@ -698,11 +742,21 @@ function renderExchange({ user, steps }, live) {
       ${acts.length ? `<ul class="activity">${acts.map(renderAct).join('')}</ul>` : ''}
       ${thoughts ? `<details class="thinking"><summary>Thinking</summary><div>${renderMarkdown(thoughts)}</div></details>` : ''}
       ${answers.length ? `<div class="answer">${renderMarkdown(answers.join('\n\n'))}</div>` : ''}
-      ${waiting ? `<div class="loader"><span class="label">${escapeHtml(liveNote || (pendingAct ? actLabel(pendingAct.call) : 'Thinking'))}…</span><span class="elapsed"></span></div>` : ''}
+      ${waiting ? `<div class="loader"><span class="orb-slot" data-state="${orbState(pendingAct?.call, liveNote, thoughts)}"></span><span class="label">${escapeHtml(liveNote || (pendingAct ? actLabel(pendingAct.call) : 'Thinking'))}…</span><span class="elapsed"></span></div>` : ''}
       ${[...new Set(notes)].map((n) => `<p class="note">${escapeHtml(n)}</p>`).join('')}
       ${answeredAt && !live ? `<p class="time">${escapeHtml([clock(answeredAt), took ? `${took}s` : '', by].filter(Boolean).join(' · '))}</p>` : ''}
     </div>
   </section>`;
+}
+
+// Which orb animation fits the current step.
+function orbState(call, note, thoughts) {
+  if (/limit|waiting/i.test(note)) return 'breathing';
+  if (/reconnect|trying|unavailable/i.test(note)) return 'connecting';
+  if (call?.name === 'save_to_inbox') return 'weaving';
+  if (call?.name === 'view_photos') return 'shaping';
+  if (call) return 'searching';
+  return thoughts ? 'solving' : 'working';
 }
 
 function actLabel({ name, args = {} }) {
@@ -746,7 +800,7 @@ function renderNotice() {
 function emptyState() {
   const prompts = ['What should I focus on today?', 'Summarise where everything stands.', 'I want to add a journal entry.'];
   return `<div class="empty">
-    <img src="icons/icon-192.png" alt="" width="64" height="64">
+    <div class="hero"><span class="hero-slot"></span></div>
     <h1>Nexus</h1>
     <p>Ask about anything in your notes, or tell me what’s new. Tap Deep for the harder questions.</p>
     <div class="chips">${prompts.map((p) => `<button type="button" data-prompt="${escapeHtml(p)}">${escapeHtml(p)}</button>`).join('')}</div>

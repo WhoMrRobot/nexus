@@ -1,8 +1,8 @@
 // Keeps the app's own files available offline. It never touches GitHub or Gemini requests.
-const CACHE = 'nexus-v8';
+const CACHE = 'nexus-v9';
 const SHELL = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',
-  'js/app.js', 'js/store.js', 'js/github.js', 'js/gemini.js', 'js/openrouter.js', 'js/sse.js', 'js/markdown.js', 'js/prompt.js',
+  'js/app.js', 'js/store.js', 'js/github.js', 'js/gemini.js', 'js/openrouter.js', 'js/sse.js', 'js/markdown.js', 'js/prompt.js', 'js/orb.js', 'vendor/thinking-orbs/engine.js',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 
