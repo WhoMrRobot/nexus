@@ -1,6 +1,6 @@
 // Reads and writes the private knowledge-base repo through the GitHub REST API.
-// Text files are cached on the phone by git blob sha, so only changed files are downloaded again.
-import { idb } from './store.js';
+// Text files are cached on the phone (encrypted) by git blob sha, so only changed files are downloaded again.
+import { fileCache } from './store.js';
 
 const API = 'https://api.github.com';
 const TEXT = /\.(md|txt|csv|json)$/i;
@@ -57,20 +57,20 @@ export class Repo {
   }
 
   async blobText(sha) {
-    const cached = await idb.get('blobs', sha).catch(() => undefined);
+    const cached = await fileCache.get(sha).catch(() => undefined);
     if (cached !== undefined) return cached;
     const res = await this.api(`/repos/${this.repo}/git/blobs/${sha}`, {
       cache: 'default',
       headers: { Accept: 'application/vnd.github.raw+json' },
     });
     const text = await res.text();
-    idb.put('blobs', text, sha).catch(() => {});
+    fileCache.put(sha, text).catch(() => {});
     return text;
   }
 
   async prune() {
     const keep = new Set(this.tree.map((e) => e.sha));
-    for (const key of await idb.keys('blobs').catch(() => [])) if (!keep.has(key)) idb.del('blobs', key).catch(() => {});
+    for (const sha of await fileCache.keys().catch(() => [])) if (!keep.has(sha)) fileCache.del(sha).catch(() => {});
   }
 
   find(path) {

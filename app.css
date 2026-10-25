@@ -234,6 +234,54 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 #chat-list .open span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #chat-list .open small { color: var(--muted); font-size: 12px; }
 
+/* ---------- PIN lock ---------- */
+
+.lock {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: calc(env(safe-area-inset-top) + 24px) 24px calc(env(safe-area-inset-bottom) + 24px);
+  background: var(--bg);
+  overflow-y: auto;
+}
+.lock[hidden] { display: none; }
+.lock-box { width: min(100%, 340px); text-align: center; }
+.lock-box img { border-radius: 18px; }
+.lock-box h1 { margin: 14px 0 4px; font-size: 21px; }
+.lock-box .hint { margin-bottom: 14px; }
+.pin {
+  display: block;
+  width: 100%;
+  margin: 8px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  font-size: 22px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  outline: none;
+}
+.pin[hidden] { display: none; }
+.pin:focus { border-color: var(--accent); }
+.pin::placeholder { letter-spacing: normal; font-size: 16px; }
+.lock-box .primary {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.lock-box .primary:disabled { opacity: 0.6; }
+.lock-error { min-height: 1.4em; margin: 10px 0 0; font-size: 14px; color: var(--danger); }
+.link { padding: 8px; border: 0; background: none; font-size: 14px; color: var(--muted); text-decoration: underline; }
+.link[hidden] { display: none; }
+
 /* ---------- settings ---------- */
 
 dialog {

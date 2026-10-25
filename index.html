@@ -47,6 +47,20 @@
   </form>
 </div>
 
+<div id="lock" class="lock" hidden>
+  <form id="lock-form" class="lock-box" autocomplete="off">
+    <img src="icons/icon-192.png" width="72" height="72" alt="">
+    <h1 id="lock-title">Enter your PIN</h1>
+    <p id="lock-hint" class="hint"></p>
+    <input id="pin" class="masked pin" inputmode="numeric" placeholder="PIN" aria-label="PIN" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <input id="pin2" class="masked pin" inputmode="numeric" placeholder="Repeat PIN" aria-label="Repeat PIN" autocapitalize="off" autocorrect="off" spellcheck="false" hidden>
+    <button id="lock-go" class="primary" type="submit">Unlock</button>
+    <p id="lock-error" class="lock-error" role="alert"></p>
+    <button id="lock-forgot" class="link" type="button">Forgot PIN?</button>
+    <button id="lock-cancel" class="link" type="button" hidden>Cancel</button>
+  </form>
+</div>
+
 <div id="drawer" class="drawer" hidden>
   <div class="drawer-backdrop"></div>
   <nav class="drawer-panel" aria-label="Chats">
@@ -64,7 +78,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
-    <p class="hint">Keys are saved on this phone only. Nothing is sent anywhere except Google (Gemini) and GitHub.</p>
+    <p class="hint">Keys are saved on this phone only, encrypted with your PIN. Nothing is sent anywhere except Google (Gemini) and GitHub.</p>
 
     <label>Gemini API key
       <input name="geminiKey" class="masked" required autocapitalize="off" autocorrect="off" spellcheck="false">
@@ -114,6 +128,10 @@
 
     <details>
       <summary>More</summary>
+      <div class="buttons">
+        <button id="btn-lock" type="button">Lock now</button>
+        <button id="btn-pin" type="button">Change PIN</button>
+      </div>
       <div class="buttons">
         <button id="btn-refresh" type="button">Reload all files</button>
         <button id="btn-wipe" type="button" class="danger">Delete all chats</button>
