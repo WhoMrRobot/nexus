@@ -192,16 +192,9 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 
 /* ---------- welcome ---------- */
 
-.empty { max-width: 420px; margin: 13vh auto 0; text-align: center; }
-.hero { position: relative; display: grid; place-items: center; width: 220px; height: 220px; margin: 0 auto 6px; }
-.hero::before {   /* a faint light behind the orb */
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--halo) 0%, transparent 65%);
-}
-.hero .orb { position: relative; }
+.empty { max-width: 420px; margin: 4vh auto 0; text-align: center; }
+.hero { display: grid; place-items: center; margin: 0 auto 10px; }
+.hero .brain { display: block; }
 .empty h1 {
   margin: 0;
   font-size: 30px;

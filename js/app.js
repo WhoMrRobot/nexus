@@ -7,6 +7,7 @@ import * as openrouter from './openrouter.js';
 import { renderMarkdown, escapeHtml } from './markdown.js';
 import { TOOLS, INBOX, INBOX_HEADER, systemPrompt } from './prompt.js';
 import { Orb } from './orb.js';
+import { Brain } from './brain.js';
 
 const $ = (sel) => document.querySelector(sel);
 const app = $('#app');
@@ -46,7 +47,7 @@ const secondsSince = (t) => ((Date.now() - t) / 1000).toFixed(1);
 
 // Two orbs: a small one in the loader (it changes with the step), a large one on the welcome screen.
 const liveOrb = new Orb({ preset: 20, px: 22 });
-const heroOrb = new Orb({ preset: 64, px: 168, state: 'searching' });
+const brain = new Brain();   // the home screen's graph of the notes
 
 const ICON = {
   send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
@@ -145,6 +146,10 @@ function loadRepo(force = false) {
       repo = r;
       repoLoadedAt = Date.now();
       setStatus(readyText(r), true);
+      brain.setNotes(
+        r.tree.filter((e) => /.md$/i.test(e.path)).map((e) => ({ path: e.path, text: r.text.get(e.path) })),
+        r.tree.filter((e) => IMAGE.test(e.path)).map((e) => e.path),
+      );
       if (!chat?.history.length && !busy) renderAll();   // the greeting can now use the name from the notes
       note(`files: ${r.textCount} ready in ${secondsSince(started)}s`);
       return r;
@@ -667,10 +672,11 @@ function placeOrbs() {
   }
   const hero = log.querySelector('.hero-slot');
   if (hero) {
-    hero.replaceWith(heroOrb.canvas);
-    heroOrb.start();
+    brain.setSize(Math.min(window.innerWidth - 32, 380));
+    hero.replaceWith(brain.canvas);
+    brain.start();
   } else {
-    heroOrb.stop();
+    brain.stop();
   }
 }
 
