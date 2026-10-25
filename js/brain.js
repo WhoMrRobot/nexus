@@ -1,10 +1,15 @@
 // The "second brain" on the home screen: a living graph of the notes. Folders and files are hubs,
 // each file's sections and lines are the dots around it, and files that mention each other are linked.
 // It is laid out once, then drifts slowly; now and then a soft pulse travels along a link.
+// Pinch to zoom (up to 4x), drag to move, double-tap to zoom in or back out, tap a cluster to light up its links.
 // Only the shape of the notes is drawn, never their text.
 
 const darkQuery = matchMedia('(prefers-color-scheme: dark)');
 const reducedQuery = matchMedia('(prefers-reduced-motion: reduce)');
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 
 function seeded(seed) {
   let s = seed % 2147483647 || 1;
@@ -29,6 +34,11 @@ export class Brain {
     this.running = false;
     this.raf = 0;
     this.loop = this.loop.bind(this);
+    this.view = { k: 1, x: 0, y: 0 };
+    this.spin = 0;
+    this.lastT = 0;
+    this.selected = null;
+    this.bindGestures();
     this.readColors();
     darkQuery.addEventListener('change', () => { this.readColors(); this.draw(); });
     document.addEventListener('visibilitychange', () => (document.hidden ? this.pause() : this.wanted && this.start()));
@@ -39,6 +49,7 @@ export class Brain {
     const dark = darkQuery.matches;
     this.ink = dark ? [222, 226, 245] : [30, 34, 62];
     this.accent = cssVar('--accent') || (dark ? '#a3b1ff' : '#4f5bd5');
+    this.bg = cssVar('--bg') || (dark ? '#0b0c14' : '#f6f7fb');
   }
 
   setSize(px) {
@@ -46,6 +57,7 @@ export class Brain {
     this.px = px;
     this.canvas.style.width = `${px}px`;
     this.canvas.style.height = `${px}px`;
+    this.view = { k: 1, x: 0, y: 0 };
     this.fit();
   }
 
@@ -178,6 +190,7 @@ export class Brain {
     this.links = links;
     this.mentions = links.filter((l) => l.kind === 'mention');
     this.pulses = [];
+    this.selected = null;
     this.fit();
   }
 
@@ -194,12 +207,19 @@ export class Brain {
     this.draw();
   }
 
+  // Where a node is drawn: its laid-out place, a slow drift, the slow turn, then the zoom and pan.
   pos(n, t) {
     const s = this.scale;
-    const spin = t * 0.012;   // the whole brain turns very slowly
     const x = (n.x - this.cx) * s + Math.cos(t * 0.6 + n.phase) * n.amp * s;
     const y = (n.y - this.cy) * s + Math.sin(t * 0.5 + n.phase) * n.amp * s;
-    return [this.px / 2 + x * Math.cos(spin) - y * Math.sin(spin), this.px / 2 + x * Math.sin(spin) + y * Math.cos(spin)];
+    const rx = x * Math.cos(this.spin) - y * Math.sin(this.spin);
+    const ry = x * Math.sin(this.spin) + y * Math.cos(this.spin);
+    const v = this.view;
+    return [this.px / 2 + rx * v.k + v.x, this.px / 2 + ry * v.k + v.y];
+  }
+
+  label(n) {
+    return n.kind === 'hub' ? n.folder : n.path.split('/').pop().replace(/\.md$/i, '');
   }
 
   draw() {
@@ -213,10 +233,17 @@ export class Brain {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, this.px, this.px);
     const t = reducedQuery.matches ? 0 : performance.now() / 1000;
+    if (this.view.k < 1.05) this.spin += Math.min(0.1, Math.max(0, t - this.lastT)) * 0.012;   // the slow turn pauses while zoomed in
+    this.lastT = t;
+    const k = this.view.k;
+    const grow = Math.min(1.8, 1 + (k - 1) * 0.3);
     const [ir, ig, ib] = this.ink;
     const ink = (a) => `rgba(${ir},${ig},${ib},${a})`;
     const P = new Map();
     for (const n of [...this.nodes, ...this.dots]) P.set(n, this.pos(n, t));
+    this.lastP = P;
+    const sel = this.selected;
+    const near = sel ? new Set(this.links.filter((l) => l.a === sel || l.b === sel).flatMap((l) => [l.a, l.b])) : null;
 
     ctx.lineWidth = 0.5;
     ctx.strokeStyle = ink(0.07);
@@ -229,7 +256,7 @@ export class Brain {
       ctx.lineTo(x2, y2);
     }
     ctx.stroke();
-    ctx.strokeStyle = ink(0.16);
+    ctx.strokeStyle = ink(sel ? 0.08 : 0.16);
     ctx.lineWidth = 0.6;
     ctx.beginPath();
     for (const l of this.links) {
@@ -239,20 +266,54 @@ export class Brain {
       ctx.lineTo(x2, y2);
     }
     ctx.stroke();
+    if (sel) {   // the selected cluster's connections, in the accent colour
+      ctx.strokeStyle = this.accent;
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      for (const l of this.links) {
+        if (l.a !== sel && l.b !== sel) continue;
+        const [x1, y1] = P.get(l.a);
+        const [x2, y2] = P.get(l.b);
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+      }
+      ctx.stroke();
+    }
 
     for (const d of this.dots) {
       const [x, y] = P.get(d);
-      ctx.fillStyle = d.hot ? this.accent : ink(0.62);
+      if (x < -4 || x > this.px + 4 || y < -4 || y > this.px + 4) continue;
+      const faded = sel && d.parent && !near.has(d.parent);
+      ctx.fillStyle = d.hot || (sel && d.parent === sel) ? this.accent : ink(faded ? 0.3 : 0.62);
       ctx.beginPath();
-      ctx.arc(x, y, d.r, 0, Math.PI * 2);
+      ctx.arc(x, y, d.r * grow, 0, Math.PI * 2);
       ctx.fill();
     }
     for (const n of this.nodes) {
       const [x, y] = P.get(n);
-      ctx.fillStyle = n.hot ? this.accent : ink(n.kind === 'hub' ? 0.95 : 0.85);
+      ctx.fillStyle = n.hot || n === sel ? this.accent : ink(n.kind === 'hub' ? 0.95 : 0.85);
       ctx.beginPath();
-      ctx.arc(x, y, n.r, 0, Math.PI * 2);
+      ctx.arc(x, y, n.r * grow * (n === sel ? 1.4 : 1), 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // names: folders once zoomed in a little, files when closer, and the selected cluster's neighbours
+    ctx.font = '600 11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (const n of this.nodes) {
+      const show = n === sel || (near && near.has(n)) || ((n.kind === 'hub' || !n.folder) && k >= 1.3) || (n.kind === 'file' && k >= 2.2);
+      if (!show) continue;
+      const [x, y] = P.get(n);
+      if (x < -60 || x > this.px + 20 || y < -10 || y > this.px + 10) continue;
+      const text = this.label(n);
+      const w = ctx.measureText(text).width;
+      const lx = x + n.r * grow + 4;
+      ctx.fillStyle = this.bg;
+      ctx.globalAlpha = 0.72;
+      ctx.fillRect(lx - 2, y - 7, w + 4, 14);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = n === sel ? this.accent : ink(n.kind === 'hub' ? 0.95 : 0.78);
+      ctx.fillText(text, lx, y);
     }
 
     // a thought: a small light travelling along a link
@@ -278,6 +339,131 @@ export class Brain {
         ctx.globalAlpha = 1;
       }
     }
+  }
+
+  // ---------- zoom, pan and tap ----------
+
+  bindGestures() {
+    const c = this.canvas;
+    c.style.touchAction = 'none';
+    const pts = new Map();
+    let start = null;
+    let moved = false;
+    let lastTap = 0;
+    let lastTapAt = null;
+    const local = (e) => {
+      const r = c.getBoundingClientRect();
+      return [e.clientX - r.left, e.clientY - r.top];
+    };
+    const snapshot = () => ({ view: { ...this.view }, pts: new Map(pts), time: performance.now() });
+
+    c.addEventListener('pointerdown', (e) => {
+      try { c.setPointerCapture(e.pointerId); } catch {}   // keeps a finger that slides off the canvas tracked
+      pts.set(e.pointerId, local(e));
+      moved = pts.size > 1;
+      start = snapshot();
+    });
+    c.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId) || !start) return;
+      pts.set(e.pointerId, local(e));
+      const now = [...pts.values()];
+      const was = [...start.pts.values()];
+      if (now.length >= 2 && was.length >= 2) {   // pinch: zoom about the fingers and follow them
+        const k = clamp(start.view.k * (dist(now[0], now[1]) / (dist(was[0], was[1]) || 1)), 1, 4);
+        const m0 = mid(was[0], was[1]);
+        const m1 = mid(now[0], now[1]);
+        const c0 = this.px / 2;
+        const wx = (m0[0] - c0 - start.view.x) / start.view.k;
+        const wy = (m0[1] - c0 - start.view.y) / start.view.k;
+        this.setView(k, m1[0] - c0 - wx * k, m1[1] - c0 - wy * k);
+        moved = true;
+      } else if (now.length === 1 && was.length === 1) {   // drag: move around while zoomed in
+        const dx = now[0][0] - was[0][0];
+        const dy = now[0][1] - was[0][1];
+        if (Math.hypot(dx, dy) > 6) moved = true;
+        if (moved && this.view.k > 1) this.setView(this.view.k, start.view.x + dx, start.view.y + dy);
+      }
+      if (!this.running) this.draw();
+    });
+    const end = (e) => {
+      if (!pts.has(e.pointerId)) return;
+      const p = pts.get(e.pointerId);
+      pts.delete(e.pointerId);
+      if (pts.size) {
+        start = snapshot();
+        return;
+      }
+      if (!moved && start && performance.now() - start.time < 300) {
+        const now = performance.now();
+        if (lastTapAt && now - lastTap < 320 && dist(p, lastTapAt) < 30) {
+          this.animateTo(this.view.k > 1.5 ? 1 : 2.6, p);
+          lastTapAt = null;
+        } else {
+          lastTap = now;
+          lastTapAt = p;
+          this.tap(p);
+        }
+      }
+    };
+    c.addEventListener('pointerup', end);
+    c.addEventListener('pointercancel', end);
+    c.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.zoomAt(local(e), this.view.k * Math.exp(-e.deltaY * 0.002));
+    }, { passive: false });
+    c.addEventListener('gesturestart', (e) => e.preventDefault());
+  }
+
+  setView(k, x, y) {
+    if (k <= 1.001) {
+      this.view = { k: 1, x: 0, y: 0 };
+      return;
+    }
+    const lim = (this.px / 2) * (k - 1);
+    this.view = { k, x: clamp(x, -lim, lim), y: clamp(y, -lim, lim) };
+  }
+
+  zoomAt(p, k) {
+    const c0 = this.px / 2;
+    const v = this.view;
+    const z = clamp(k, 1, 4);
+    const wx = (p[0] - c0 - v.x) / v.k;
+    const wy = (p[1] - c0 - v.y) / v.k;
+    this.setView(z, p[0] - c0 - wx * z, p[1] - c0 - wy * z);
+    if (!this.running) this.draw();
+  }
+
+  animateTo(k, p) {
+    const from = { ...this.view };
+    this.zoomAt(p, k);
+    const to = { ...this.view };
+    this.view = from;
+    const t0 = performance.now();
+    const step = () => {
+      const f = Math.min(1, (performance.now() - t0) / 280);
+      const e = 1 - (1 - f) ** 3;
+      this.view = { k: from.k + (to.k - from.k) * e, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e };
+      if (!this.running) this.draw();
+      if (f < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // Tap a cluster to light up what it connects to; tap empty space to clear.
+  tap(p) {
+    let best = null;
+    let bestD = 22;
+    for (const n of this.nodes) {
+      const q = this.lastP?.get(n);
+      if (!q) continue;
+      const d = dist(p, q);
+      if (d < bestD) {
+        best = n;
+        bestD = d;
+      }
+    }
+    this.selected = best && best !== this.selected ? best : null;
+    if (!this.running) this.draw();
   }
 
   loop() {
