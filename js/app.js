@@ -733,11 +733,18 @@ async function testConnection() {
   const s = readForm();
   const lines = [];
   out.textContent = 'Testing…';
-  try {
-    const info = await new Repo(s).check();
-    lines.push(`GitHub ✓ ${info.name}${info.private ? ' (private)' : ' (PUBLIC: make it private!)'}${info.canWrite ? '' : ' · token can’t write: the inbox won’t save'}`);
-  } catch (err) {
-    lines.push(`GitHub ✗ ${friendly(err)}`);
+  const repoName = new Repo(s).repo;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repoName)) {
+    lines.push('GitHub ✗ Type the repository as owner/name (the grey text is only an example).');
+  } else if (!s.githubToken) {
+    lines.push('GitHub ✗ Paste the GitHub token first.');
+  } else {
+    try {
+      const info = await new Repo(s).check();
+      lines.push(`GitHub ✓ ${info.name}${info.private ? ' (private)' : ' (PUBLIC: make it private!)'}${info.canWrite ? '' : ' · token can’t write: the inbox won’t save'}`);
+    } catch (err) {
+      lines.push(`GitHub ✗ ${friendly(err)}`);
+    }
   }
   for (const model of [s.model, s.fallbackModel].filter(Boolean)) {
     try {
