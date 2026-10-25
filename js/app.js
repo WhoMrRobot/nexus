@@ -359,7 +359,7 @@ async function callModel(reply, system, turn) {
       } else if (([429, 500, 503].includes(err.status) || err.status === 'timeout') && canFallBack) {
         turn.model = settings.fallbackModel;
         turn.fellBack = true;
-        turn.why = err.status === 'timeout' ? 'didn’t respond' : 'hit its limit';
+        turn.why = err.status === 'timeout' ? 'didn’t respond' : err.status === 429 ? 'hit its free limit' : 'was overloaded (Google’s side, not your limit)';
         turn.stripSignatures = true;
         liveNote = err.status === 'timeout' ? `No reply, trying ${turn.model}` : `Limit hit, trying ${turn.model}`;
       } else if (err.status === 429 && err.retryDelay && err.retryDelay <= 60 && turn.waits < 2) {
@@ -718,6 +718,7 @@ function friendly(err) {
     if (s === 401 || s === 403) return 'The Gemini key was refused. Check it in Settings.';
     if (s === 404) return `Gemini doesn't know the model "${settings.model}". Check the model name in Settings.`;
     if (s === 'timeout') return 'Gemini stopped answering (nothing came back for 75 seconds), on the backup model too. Tap Retry, or set Thinking to Low.';
+    if (s === 500 || s === 503) return 'Gemini is overloaded right now (Google’s side, not your limit). Tap Retry in a minute.';
   }
   if (err?.source === 'github') {
     if (s === 401) return 'GitHub refused the token. It may have expired: make a new one and paste it in Settings.';
