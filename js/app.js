@@ -25,6 +25,17 @@ let controller = null;
 let notice = null;         // { kind: 'error' | 'note', text, retry }
 let pending = [];          // photos picked for the next message: [base64 jpeg]
 const quirks = { think: {}, photoParts: 'nested' };   // request shapes learned at run time
+let liveNote = '';         // shown in the loader while waiting, e.g. for the free limit
+let turnStarted = 0;
+
+// A short event log (no message text or keys) kept on the phone, shown in Settings → More → Show log.
+let events = (() => { try { return JSON.parse(localStorage.getItem('nexus.log') || '[]'); } catch { return []; } })();
+function note(text) {
+  events.push(`${new Date().toLocaleTimeString('en-GB')} ${text}`);
+  events = events.slice(-80);
+  try { localStorage.setItem('nexus.log', JSON.stringify(events)); } catch {}
+}
+const secondsSince = (t) => ((Date.now() - t) / 1000).toFixed(1);
 
 const ICON = {
   send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
@@ -45,6 +56,10 @@ async function init() {
   fitViewport();
   bindUi();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  setInterval(() => {   // seconds counter on the loader, so a slow answer is visibly still working
+    const el = busy && log.querySelector('.loader .elapsed');
+    if (el) el.textContent = `${Math.floor((Date.now() - turnStarted) / 1000)}s`;
+  }, 1000);
   await dropPinData();
   settings = loadSettings();
   chat = await openChat(localStorage.getItem('nexus.chat'));
@@ -89,16 +104,19 @@ function loadRepo(force = false) {
   if (repoLoading) return repoLoading;
   if (!force && repo && Date.now() - repoLoadedAt < 5 * 60e3) return Promise.resolve(repo);
   const r = repo && !force ? repo : new Repo(settings);
+  const started = Date.now();
   setStatus('Loading files…');
   repoLoading = r.load((done, total) => setStatus(`Loading files ${done}/${total}…`))
     .then(() => {
       repo = r;
       repoLoadedAt = Date.now();
       setStatus(readyText(r));
+      note(`files: ${r.textCount} ready in ${secondsSince(started)}s`);
       return r;
     })
     .catch((err) => {
       setStatus(friendly(err).split('.')[0]);
+      note(`files failed: ${err.status ?? ''} ${String(err.message).slice(0, 200)}`);
       throw err;
     })
     .finally(() => {
@@ -171,13 +189,16 @@ async function submit(e) {
 async function runAgent() {
   busy = true;
   controller = new AbortController();
+  turnStarted = Date.now();
+  liveNote = '';
   updateSend();
   renderLive();
-  const turn = { model: settings.model, fellBack: false, stripSignatures: false };
+  const turn = { model: settings.model, fellBack: false, stripSignatures: false, waits: 0, round: 0 };
   try {
     const r = await loadRepo();
     const system = await buildSystem(r);
     for (let round = 0; round < 12; round++) {
+      turn.round = round + 1;
       const reply = { role: 'model', parts: [] };
       chat.history.push(reply);
       await callModel(reply, system, turn);
@@ -190,17 +211,27 @@ async function runAgent() {
       const results = { role: 'user', parts: [] };
       chat.history.push(results);
       for (const p of calls) {
-        results.parts.push(await runTool(p.functionCall));
+        const t = Date.now();
+        const res = await runTool(p.functionCall);
+        note(`tool ${p.functionCall.name} ${res.functionResponse.response?.error ? 'failed' : 'ok'} (${secondsSince(t)}s)`);
+        results.parts.push(res);
         renderLive();
       }
     }
+    note(`answer done in ${secondsSince(turnStarted)}s`);
   } catch (err) {
-    if (controller.signal.aborted) notice = { kind: 'note', text: 'Stopped.' };
-    else notice = { kind: 'error', text: friendly(err), retry: true };
+    if (controller.signal.aborted) {
+      notice = { kind: 'note', text: 'Stopped.' };
+      note('stopped by user');
+    } else {
+      notice = { kind: 'error', text: friendly(err), detail: `${err.status ?? ''} ${err.message}`.trim(), retry: true };
+      note(`failed: ${err.status ?? ''} ${String(err.message).slice(0, 300)}`);
+    }
     console.error(err);
   } finally {
     busy = false;
     controller = null;
+    liveNote = '';
     if (repo && !repoLoading) setStatus(readyText(repo));
     repair(chat.history);
     updateSend();
@@ -254,34 +285,52 @@ function requestBody(system, turn) {
 
 async function callModel(reply, system, turn) {
   for (let attempt = 0; ; attempt++) {
+    const started = Date.now();
+    let first = 0;
+    let usage = null;
+    let finish = '';
     try {
       const body = requestBody(system, turn);
+      const size = JSON.stringify(body, (k, v) => (k === 'data' ? '' : v)).length;
+      note(`→ ${turn.model} round ${turn.round}: ${Math.round(size / 1000)}k chars sent`);
       for await (const chunk of stream({ key: settings.geminiKey, model: turn.model, body, signal: controller.signal })) {
+        if (!first) {
+          first = Date.now();
+          note(`← first data after ${secondsSince(started)}s`);
+          liveNote = '';
+        }
         if (chunk.promptFeedback?.blockReason) throw new Error(`Gemini refused the request (${chunk.promptFeedback.blockReason}).`);
         const cand = chunk.candidates?.[0];
         for (const p of cand?.content?.parts || []) mergePart(reply.parts, p);
+        if (cand?.finishReason) finish = cand.finishReason;
         if (cand?.finishReason && cand.finishReason !== 'STOP') reply._finish = cand.finishReason;
+        if (chunk.usageMetadata) usage = chunk.usageMetadata;
         renderLive();
       }
-      if (turn.fellBack) reply._model = turn.model;
+      const u = usage || {};
+      note(`✓ ${secondsSince(started)}s ${finish || 'no finish reason'} · tokens in ${u.promptTokenCount ?? '?'}, out ${u.candidatesTokenCount ?? '?'}, thinking ${u.thoughtsTokenCount ?? 0}`);
+      if (turn.fellBack) Object.assign(reply, { _model: turn.model, _why: turn.why });
       return;
     } catch (err) {
+      note(`✗ ${turn.model} after ${secondsSince(started)}s: ${err.status ?? ''} ${String(err.message).slice(0, 300)}`);
       if (controller.signal.aborted || reply.parts.length || attempt >= 5) throw err;
       const msg = String(err.message);
+      const canFallBack = !turn.fellBack && settings.fallbackModel && settings.fallbackModel !== turn.model;
       if (err.status === 400 && /thinking/i.test(msg) && (quirks.think[turn.model] ?? 0) < 3) {
         quirks.think[turn.model] = (quirks.think[turn.model] ?? 0) + 1;
       } else if (err.status === 400 && quirks.photoParts === 'nested' && /function.?response|parts/i.test(msg)) {
         quirks.photoParts = 'sibling';
       } else if (err.status === 400 && /signature/i.test(msg) && !turn.stripSignatures) {
         turn.stripSignatures = true;
-      } else if ([429, 500, 503].includes(err.status) && !turn.fellBack && settings.fallbackModel && settings.fallbackModel !== turn.model) {
+      } else if (([429, 500, 503].includes(err.status) || err.status === 'timeout') && canFallBack) {
         turn.model = settings.fallbackModel;
         turn.fellBack = true;
+        turn.why = err.status === 'timeout' ? 'didn’t respond' : 'hit its limit';
         turn.stripSignatures = true;
-        setStatus(`Limit hit, using ${turn.model}…`);
-      } else if (err.status === 429 && err.retryDelay && err.retryDelay <= 30) {
-        setStatus(`Limit hit, retrying in ${Math.ceil(err.retryDelay)}s…`);
-        await sleep(err.retryDelay * 1000);
+        liveNote = err.status === 'timeout' ? `No reply, trying ${turn.model}` : `Limit hit, trying ${turn.model}`;
+      } else if (err.status === 429 && err.retryDelay && err.retryDelay <= 60 && turn.waits < 2) {
+        turn.waits++;
+        await countdown(err.retryDelay, 'Free limit reached, waiting');
       } else if ([500, 503].includes(err.status)) {
         await sleep(1500 * (attempt + 1));
       } else {
@@ -289,6 +338,16 @@ async function callModel(reply, system, turn) {
       }
     }
   }
+}
+
+async function countdown(seconds, label) {
+  for (let s = Math.ceil(seconds); s > 0; s--) {
+    if (controller.signal.aborted) throw new Error('Stopped.');
+    liveNote = `${label} ${s}s`;
+    renderLive();
+    await sleep(1000);
+  }
+  liveNote = '';
 }
 
 // Streamed text arrives in pieces; join them, keeping thought text and answer text apart.
@@ -304,25 +363,32 @@ function mergePart(parts, p) {
   parts.push({ ...p });
 }
 
-// What Gemini sees: photos only from the last two messages, internal fields removed.
+// What Gemini sees. To stay inside the free limits, earlier answers keep their text but not the files
+// they read or their thinking (the model can read a file again), and photos come only from the last two messages.
 function serialize(history, turn) {
   const users = history.map((c, i) => (isUserMessage(c) ? i : -1)).filter((i) => i >= 0);
   const photosFrom = users.length > 2 ? users[users.length - 2] : 0;
+  const thisTurn = users.length ? users[users.length - 1] : 0;
   const out = [];
   history.forEach((c, i) => {
     const old = i < photosFrom;
+    const earlier = i < thisTurn;
     const parts = [];
     for (const p of c.parts) {
       if (p.inlineData) {
         parts.push(old ? { text: '[photo sent earlier]' } : { inlineData: p.inlineData });
       } else if (p.functionResponse) {
         const { parts: media, ...fr } = p.functionResponse;
-        if (media?.length && !old) {
+        if (earlier && fr.name !== 'save_to_inbox') {
+          parts.push({ functionResponse: { ...fr, response: { note: 'Result shown earlier and left out here; call the tool again if you need it.' } } });
+        } else if (media?.length && !old) {
           if (quirks.photoParts === 'nested') parts.push({ functionResponse: { ...fr, parts: media } });
           else parts.push({ functionResponse: fr }, ...media);
         } else {
           parts.push({ functionResponse: fr });
         }
+      } else if (earlier && p.thought) {
+        continue;
       } else {
         const q = Object.fromEntries(Object.entries(p).filter(([k]) => !k.startsWith('_')));
         if (turn.stripSignatures && q.thoughtSignature) {
@@ -354,6 +420,11 @@ function trim(contents) {
 
 // ---------- tools ----------
 
+// read_file takes `paths`; accept a single `path` too, in case the model sends that.
+function readPaths(args = {}) {
+  return [...(Array.isArray(args.paths) ? args.paths : []), ...(args.path ? [args.path] : [])].filter(Boolean);
+}
+
 async function runTool({ name, args = {}, id }) {
   const reply = (response, media) => ({
     functionResponse: { name, ...(id ? { id } : {}), response, ...(media?.length ? { parts: media } : {}) },
@@ -363,9 +434,19 @@ async function runTool({ name, args = {}, id }) {
       case 'list_files':
         return reply({ result: repo.list(args.folder) });
       case 'read_file': {
-        let text = await repo.readText(args.path);
-        if (text.length > 60_000) text = `${text.slice(0, 60_000)}\n\n[Cut at 60,000 characters.]`;
-        return reply({ path: args.path, content: text });
+        const files = [];
+        let budget = 120_000;   // characters for all files in this call together
+        for (const path of readPaths(args).slice(0, 6)) {
+          try {
+            let text = await repo.readText(path);
+            if (text.length > budget) text = `${text.slice(0, Math.max(0, budget))}\n\n[Cut here: too much for one call.]`;
+            budget -= text.length;
+            files.push({ path, content: text });
+          } catch (err) {
+            files.push({ path, error: err.message, ...(err.similar?.length ? { similar_paths: err.similar } : {}) });
+          }
+        }
+        return reply(files.length ? { files } : { error: 'No path given.' });
       }
       case 'search_files':
         return reply({ result: repo.search(args.query) });
@@ -465,7 +546,11 @@ function renderLive() {
     const near = nearBottom();
     const nodes = log.querySelectorAll('.exchange');
     const html = renderExchange(groups[groups.length - 1], busy);
-    if (nodes.length === groups.length) nodes[nodes.length - 1].outerHTML = html;
+    if (nodes.length === groups.length) {
+      const opened = nodes[nodes.length - 1].querySelector('details.thinking')?.open;
+      nodes[nodes.length - 1].outerHTML = html;
+      if (opened) log.querySelector('.exchange:last-of-type details.thinking')?.setAttribute('open', '');
+    }
     else renderAll();
     if (near) scrollToEnd();
   });
@@ -488,7 +573,7 @@ function renderExchange({ user, steps }, live) {
         else if (p.text) answer += p.text;
       }
       if (answer.trim()) answers.push(answer);
-      if (c._model) notes.push(`Answered by ${c._model}: the main model's limit was hit.`);
+      if (c._model) notes.push(`Answered by ${c._model}: the main model ${c._why || 'hit its limit'}.`);
       if (c._finish) notes.push(finishNote(c._finish));
     } else {
       for (const p of c.parts) {
@@ -508,7 +593,7 @@ function renderExchange({ user, steps }, live) {
       ${acts.length ? `<ul class="activity">${acts.map(renderAct).join('')}</ul>` : ''}
       ${thoughts ? `<details class="thinking"><summary>Thinking</summary><div>${renderMarkdown(thoughts)}</div></details>` : ''}
       ${answers.length ? `<div class="answer">${renderMarkdown(answers.join('\n\n'))}</div>` : ''}
-      ${waiting ? `<div class="loader"><i></i><i></i><i></i><span>${escapeHtml(pendingAct ? actLabel(pendingAct.call) : 'Thinking')}…</span></div>` : ''}
+      ${waiting ? `<div class="loader"><i></i><i></i><i></i><span>${escapeHtml(liveNote || (pendingAct ? actLabel(pendingAct.call) : 'Thinking'))}…</span><span class="elapsed"></span></div>` : ''}
       ${notes.map((n) => `<p class="note">${escapeHtml(n)}</p>`).join('')}
     </div>
   </section>`;
@@ -516,7 +601,10 @@ function renderExchange({ user, steps }, live) {
 
 function actLabel({ name, args = {} }) {
   switch (name) {
-    case 'read_file': return `Reading ${args.path}`;
+    case 'read_file': {
+      const paths = readPaths(args);
+      return `Reading ${paths.slice(0, 2).join(', ')}${paths.length > 2 ? ` and ${paths.length - 2} more` : ''}`;
+    }
     case 'search_files': return `Searching “${args.query}”`;
     case 'list_files': return args.folder ? `Listing ${args.folder}` : 'Listing files';
     case 'view_photos': return `Looking at ${(args.paths || []).length} photo(s)`;
@@ -545,7 +633,8 @@ function finishNote(reason) {
 }
 
 function renderNotice() {
-  return `<div class="notice ${notice.kind}">${escapeHtml(notice.text)}${notice.retry ? ' <button type="button" data-act="retry">Retry</button>' : ''}</div>`;
+  return `<div class="notice ${notice.kind}">${escapeHtml(notice.text)}${notice.retry ? ' <button type="button" data-act="retry">Retry</button>' : ''}` +
+    `${notice.detail ? `<details><summary>Details</summary><pre>${escapeHtml(notice.detail)}</pre></details>` : ''}</div>`;
 }
 
 function emptyState() {
@@ -579,13 +668,14 @@ function friendly(err) {
     if (s === 400 && /api key/i.test(err.message)) return 'The Gemini key was refused. Check it in Settings.';
     if (s === 401 || s === 403) return 'The Gemini key was refused. Check it in Settings.';
     if (s === 404) return `Gemini doesn't know the model "${settings.model}". Check the model name in Settings.`;
+    if (s === 'timeout') return 'Gemini stopped answering (nothing came back for 75 seconds), on the backup model too. Tap Retry, or set Thinking to Low.';
   }
   if (err?.source === 'github') {
     if (s === 401) return 'GitHub refused the token. It may have expired: make a new one and paste it in Settings.';
     if (s === 403) return 'GitHub refused access. Check that the token can read and write this repo.';
     if (s === 404) return 'GitHub can’t find the repo or file. Check the repo name, and that the token includes this repo.';
   }
-  if (err instanceof TypeError) return 'No connection. Check the internet and try again.';
+  if (err instanceof TypeError) return 'The connection dropped. This happens when the phone switches network or the app goes to the background mid-answer. Tap Retry.';
   return err?.message || String(err);
 }
 
@@ -670,6 +760,9 @@ function bindUi() {
     if (ready()) loadRepo(reload).catch(() => {});
   });
   $('#btn-test').addEventListener('click', testConnection);
+  $('#btn-log').addEventListener('click', () => {
+    $('#test-result').textContent = events.length ? events.slice(-40).join('\n') : 'Nothing logged yet.';
+  });
   $('#btn-refresh').addEventListener('click', async () => {
     await fileCache.clear().catch(() => {});
     repo = null;

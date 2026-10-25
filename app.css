@@ -144,6 +144,10 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .loader i:nth-child(2) { animation-delay: 0.15s; }
 .loader i:nth-child(3) { animation-delay: 0.3s; }
 .loader span { margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loader .elapsed { flex: none; margin-left: 6px; font-variant-numeric: tabular-nums; opacity: 0.7; }
+.notice details { margin-top: 6px; color: var(--muted); }
+.notice summary { cursor: pointer; font-size: 13px; }
+.notice pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; }
 
 .note { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
 
