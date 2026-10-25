@@ -1,6 +1,6 @@
 // Nexus: chat with a private knowledge base from the phone. It runs entirely in the browser:
 // files come from GitHub, answers from Gemini, and the keys stay in this phone's storage.
-import { DEFAULTS, vault, loadSettings, saveSettings, chats, fileCache } from './store.js';
+import { DEFAULTS, loadSettings, saveSettings, dropPinData, chats, fileCache } from './store.js';
 import { Repo, IMAGE, bytesToBase64 } from './github.js';
 import { stream, checkModel } from './gemini.js';
 import { renderMarkdown, escapeHtml } from './markdown.js';
@@ -15,12 +15,7 @@ const sendBtn = $('#btn-send');
 const settingsDialog = $('#settings');
 const form = $('#settings-form');
 
-const LOCK_AFTER = 5 * 60e3;   // lock again after 5 minutes in the background
-
 let settings = { ...DEFAULTS };
-let lockMode = 'enter';
-let lockAfterTurn = false;
-let hiddenAt = 0;
 let repo = null;
 let repoLoading = null;
 let repoLoadedAt = 0;
@@ -46,20 +41,15 @@ init();
 
 // ---------- startup ----------
 
-function init() {
+async function init() {
   fitViewport();
   bindUi();
-  bindLock();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  updateSend();
-  showLock();
-}
-
-async function afterUnlock() {
-  settings = await loadSettings();
+  await dropPinData();
+  settings = loadSettings();
   chat = await openChat(localStorage.getItem('nexus.chat'));
-  hideLock();
   renderAll();
+  updateSend();
   scrollToEnd();
   if (!ready()) {
     setStatus('Setup needed');
@@ -67,121 +57,6 @@ async function afterUnlock() {
     return;
   }
   loadRepo().catch(() => {});
-}
-
-// ---------- PIN lock ----------
-
-function showLock(mode = vault.exists() ? 'enter' : 'create') {
-  lockMode = mode;
-  const create = mode !== 'enter';
-  $('#lock-title').textContent = { enter: 'Enter your PIN', create: 'Create a PIN', change: 'Choose a new PIN' }[mode];
-  $('#lock-hint').textContent = mode === 'enter'
-    ? 'Your keys and chats on this phone are locked.'
-    : 'Use 4 to 12 digits. It locks and encrypts your keys and chats on this phone. Keep a copy somewhere safe, but not in your notes repo. If you forget it, you can reset the app and paste your keys again.';
-  $('#pin2').hidden = !create;
-  $('#lock-go').textContent = { enter: 'Unlock', create: 'Create PIN', change: 'Change PIN' }[mode];
-  $('#lock-forgot').hidden = mode !== 'enter';
-  $('#lock-cancel').hidden = mode !== 'change';
-  $('#pin').value = '';
-  $('#pin2').value = '';
-  $('#lock-error').textContent = '';
-  $('#lock').hidden = false;
-  $('#pin').focus();
-}
-
-function hideLock() {
-  $('#lock').hidden = true;
-}
-
-function lockNow() {
-  showLock('enter');
-  if (busy) {
-    lockAfterTurn = true;
-    controller?.abort();
-    return;
-  }
-  clearSession();
-}
-
-// Forget everything decrypted: keys, files and the open chat.
-function clearSession() {
-  vault.lock();
-  settings = { ...DEFAULTS };
-  repo = null;
-  chat = null;
-  pending = [];
-  notice = null;
-  input.value = '';
-  log.innerHTML = '';
-  renderAttachments();
-  if (settingsDialog.open) settingsDialog.close();
-  closeDrawer();
-  setStatus('Locked');
-}
-
-function bindLock() {
-  $('#lock-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const pin = $('#pin').value.trim();
-    const error = (text) => { $('#lock-error').textContent = text; };
-    const working = (on) => { $('#lock-go').disabled = on; };
-
-    if (lockMode !== 'enter') {
-      if (!/^\d{4,12}$/.test(pin)) return error('Use 4 to 12 digits.');
-      if (pin !== $('#pin2').value.trim()) return error('The two PINs are different.');
-      working(true);
-      try {
-        if (lockMode === 'create') await vault.create(pin);
-        else await vault.changePin(pin);
-      } catch (err) {
-        working(false);
-        return error(`Could not save the PIN: ${err.message}`);
-      }
-      working(false);
-      if (lockMode === 'create') {
-        await afterUnlock();
-      } else {
-        repo = null;
-        hideLock();
-        notice = { kind: 'note', text: 'PIN changed.' };
-        renderAll();
-        loadRepo(true).catch(() => {});
-      }
-      return;
-    }
-
-    const wait = Number(localStorage.getItem('nexus.pinWait') || 0) - Date.now();
-    if (wait > 0) return error(`Too many wrong tries. Wait ${Math.ceil(wait / 1000)} seconds.`);
-    working(true);
-    const ok = await vault.unlock(pin).catch(() => false);
-    working(false);
-    if (!ok) {
-      const fails = Number(localStorage.getItem('nexus.pinFails') || 0) + 1;
-      localStorage.setItem('nexus.pinFails', String(fails));
-      if (fails >= 5) localStorage.setItem('nexus.pinWait', String(Date.now() + 30_000 * 2 ** Math.min(fails - 5, 5)));
-      $('#pin').value = '';
-      return error(fails >= 5 ? 'Wrong PIN. Too many tries: wait a little before the next one.' : 'Wrong PIN.');
-    }
-    localStorage.removeItem('nexus.pinFails');
-    localStorage.removeItem('nexus.pinWait');
-    await afterUnlock();
-  });
-
-  $('#lock-forgot').addEventListener('click', async () => {
-    if (!confirm('Reset Nexus on this phone? This deletes the saved keys and chats here. Your notes on GitHub are not touched. Then you create a new PIN and paste your keys again.')) return;
-    await vault.reset();
-    showLock('create');
-  });
-
-  $('#lock-cancel').addEventListener('click', hideLock);
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') {
-      hiddenAt = Date.now();
-    } else if (vault.unlocked() && hiddenAt && Date.now() - hiddenAt > LOCK_AFTER) {
-      lockNow();
-    }
-  });
 }
 
 function ready() {
@@ -269,7 +144,6 @@ function lastUserMessage() {
 
 async function submit(e) {
   e?.preventDefault();
-  if (!vault.unlocked()) return;
   if (busy) {
     controller?.abort();
     return;
@@ -331,11 +205,6 @@ async function runAgent() {
     repair(chat.history);
     updateSend();
     await saveChat();
-    if (lockAfterTurn) {
-      lockAfterTurn = false;
-      clearSession();
-      return;
-    }
     renderAll();
     if (nearBottom(400)) scrollToEnd();
   }
@@ -790,12 +659,12 @@ function bindUi() {
 
   $('#btn-settings').addEventListener('click', openSettings);
   $('#btn-close').addEventListener('click', () => settingsDialog.close());
-  form.addEventListener('submit', async (e) => {
+  form.addEventListener('submit', (e) => {
     e.preventDefault();
     const next = readForm();
     const reload = ['githubToken', 'repo', 'branch'].some((k) => next[k] !== settings[k]);
     settings = next;
-    await saveSettings(settings);
+    saveSettings(settings);
     settingsDialog.close();
     if (reload) repo = null;
     if (ready()) loadRepo(reload).catch(() => {});
@@ -815,15 +684,8 @@ function bindUi() {
     renderAll();
     settingsDialog.close();
   });
-  $('#btn-lock').addEventListener('click', lockNow);
-  $('#btn-pin').addEventListener('click', () => {
-    if (busy) return;
-    settingsDialog.close();
-    showLock('change');
-  });
-
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && vault.unlocked() && ready() && !busy) loadRepo().catch(() => {});
+    if (document.visibilityState === 'visible' && ready() && !busy) loadRepo().catch(() => {});
   });
 }
 
