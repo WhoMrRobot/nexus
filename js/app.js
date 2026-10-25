@@ -46,7 +46,7 @@ const secondsSince = (t) => ((Date.now() - t) / 1000).toFixed(1);
 
 // Two orbs: a small one in the loader (it changes with the step), a large one on the welcome screen.
 const liveOrb = new Orb({ preset: 20, px: 22 });
-const heroOrb = new Orb({ preset: 64, px: 64, state: 'searching' });
+const heroOrb = new Orb({ preset: 64, px: 168, state: 'searching' });
 
 const ICON = {
   send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
@@ -145,6 +145,7 @@ function loadRepo(force = false) {
       repo = r;
       repoLoadedAt = Date.now();
       setStatus(readyText(r), true);
+      if (!chat?.history.length && !busy) renderAll();   // the greeting can now use the name from the notes
       note(`files: ${r.textCount} ready in ${secondsSince(started)}s`);
       return r;
     })
@@ -803,18 +804,34 @@ function renderNotice() {
     `${notice.detail ? `<details><summary>Details</summary><pre>${escapeHtml(notice.detail)}</pre></details>` : ''}</div>`;
 }
 
+// A greeting for the time of day, with the name from Settings or the notes, and a question.
+// The line is picked by the hour, so it stays the same while the screen re-renders.
+const GREETINGS = [
+  [0, 4, 'Late night', ['Still up? What’s on your mind?', 'Quiet hours. What are we thinking about?']],
+  [4, 7, 'Early start', ['The day hasn’t started yet. What are we planning?', 'Up before the sun. What’s first?']],
+  [7, 11, 'Good morning', ['Coffee first? Then what are we up to today?', 'What’s the plan for today?']],
+  [11, 14, 'Good afternoon', ['How’s the day going so far?', 'What are we working on now?']],
+  [14, 17, 'Afternoon', ['Coffee break? What are we up to now?', 'What’s next on the list?']],
+  [17, 21, 'Good evening', ['How did today go?', 'Anything worth writing down from today?']],
+  [21, 24, 'Winding down', ['Anything to note before the day ends?', 'How was today, honestly?']],
+];
+
 function emptyState() {
-  const h = new Date().getHours();
-  const hello = h < 5 ? 'Up late?' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const now = new Date();
+  const h = now.getHours();
+  const [, , hello, questions] = GREETINGS.find(([from, to]) => h >= from && h < to);
+  const name = settings.name || repo?.ownerName || '';
+  const question = questions[(now.getDate() + h) % questions.length];
   return `<div class="empty">
     <div class="hero"><span class="hero-slot"></span></div>
-    <h1>${hello}</h1>
+    <h1>${escapeHtml(name ? `${hello}, ${name}` : hello)}</h1>
+    <p>${escapeHtml(question)}</p>
   </div>`;
 }
 
 function placeholder() {
   if (deepNext) return `Deep answer with ${modelLabel(settings.deepModel)}…`;
-  return chat?.history.length ? 'Reply to Nexus' : 'How can I help you today?';
+  return chat?.history.length ? 'Reply…' : 'Message Nexus';
 }
 
 function nearBottom(margin = 120) {

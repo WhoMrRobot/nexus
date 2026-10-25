@@ -1,42 +1,45 @@
-/* Nexus: quiet and minimal, in the spirit of the Claude app. Warm neutral colours, answers set in
-   a serif, one rounded message box, hairlines instead of boxes, nothing that competes with the text. */
+/* Nexus: minimal and calm. Midnight blue in the dark, cool porcelain in the light, one quiet
+   indigo accent (send button, Deep, links) and a single-colour orb. No gradients on text or buttons. */
 
 :root {
   color-scheme: light dark;
-  --bg: #faf9f5;
-  --bg-2: #f0eee6;          /* user bubble, drawer, sheet */
+  --bg: #f6f7fb;
+  --bg-2: #eceef6;          /* user bubble, drawer, sheet */
   --card: #ffffff;
-  --fill: rgba(31, 30, 29, 0.06);
-  --text: #1f1e1d;
-  --text-2: #73726c;
-  --text-3: #a3a19a;
-  --line: rgba(31, 30, 29, 0.12);
-  --accent: #c96442;
-  --accent-soft: rgba(201, 100, 66, 0.12);
-  --orb: #c96442;           /* orb ink tint (read by js/orb.js) */
-  --danger: #b3261e;
-  --code: #f0eee6;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.05);
+  --fill: rgba(20, 24, 60, 0.06);
+  --text: #12131f;
+  --text-2: #5f6482;
+  --text-3: #9ea2bd;
+  --line: rgba(20, 24, 60, 0.1);
+  --accent: #4f5bd5;
+  --on-accent: #ffffff;
+  --accent-soft: rgba(79, 91, 213, 0.1);
+  --halo: rgba(79, 91, 213, 0.07);
+  --orb: #3d4fa8;           /* orb ink tint (read by js/orb.js) */
+  --danger: #d92d20;
+  --code: #eceef6;
+  --shadow: 0 1px 2px rgba(20, 24, 60, 0.05), 0 8px 24px rgba(20, 24, 60, 0.07);
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, "Kohinoor Bangla", "Noto Sans Bengali", sans-serif;
-  --serif: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, "Kohinoor Bangla", "Noto Serif Bengali", serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #262624;
-    --bg-2: #1f1e1d;
-    --card: #30302e;
-    --fill: rgba(255, 255, 255, 0.06);
-    --text: #f5f4ef;
-    --text-2: #a6a39b;
-    --text-3: #6f6d66;
-    --line: rgba(255, 255, 255, 0.1);
-    --accent: #d97757;
-    --accent-soft: rgba(217, 119, 87, 0.16);
-    --orb: #e08a6c;
-    --danger: #ff7b6e;
-    --code: #1f1e1d;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.3);
+    --bg: #0b0c14;
+    --bg-2: #171928;
+    --card: #141625;
+    --fill: rgba(160, 170, 255, 0.07);
+    --text: #eef0ff;
+    --text-2: #9aa0c3;
+    --text-3: #5d6285;
+    --line: rgba(150, 160, 255, 0.13);
+    --accent: #a3b1ff;
+    --on-accent: #0b0c14;
+    --accent-soft: rgba(163, 177, 255, 0.14);
+    --halo: rgba(163, 177, 255, 0.07);
+    --orb: #c3cdf5;
+    --danger: #ff7b72;
+    --code: #171928;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 30px rgba(0, 0, 0, 0.45);
   }
 }
 
@@ -137,8 +140,8 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .thinking[open] summary::after { transform: rotate(90deg); }
 .thinking > div { margin-top: 6px; padding-left: 12px; border-left: 2px solid var(--line); }
 
-/* answers read like a page: a serif at a comfortable size */
-.answer { font: 17px/1.62 var(--serif); }
+/* answers: the system font, a little larger and airier than the interface */
+.answer { font-size: 17px; line-height: 1.6; }
 .answer > :first-child { margin-top: 0; }
 .answer > :last-child { margin-bottom: 0; }
 .answer p, .thinking p { margin: 0.65em 0; }
@@ -154,7 +157,7 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 .answer code { padding: 1px 5px; border-radius: 5px; background: var(--code); font: 0.82em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .answer pre { margin: 0.8em 0; padding: 12px 14px; border-radius: 10px; background: var(--code); overflow-x: auto; }
 .answer pre code { padding: 0; background: none; }
-.answer .table { margin: 0.9em 0; overflow-x: auto; border: 0.5px solid var(--line); border-radius: 10px; font-family: var(--sans); }
+.answer .table { margin: 0.9em 0; overflow-x: auto; border: 0.5px solid var(--line); border-radius: 10px; }
 .answer table { width: 100%; border-collapse: collapse; font-size: 14.5px; line-height: 1.45; }
 .answer th, .answer td { padding: 8px 12px; text-align: left; vertical-align: top; border-bottom: 0.5px solid var(--line); }
 .answer tr:last-child td { border-bottom: 0; }
@@ -189,9 +192,24 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 
 /* ---------- welcome ---------- */
 
-.empty { max-width: 420px; margin: 24vh auto 0; text-align: center; }
-.hero { display: grid; place-items: center; margin: 0 auto 10px; }
-.empty h1 { margin: 0; font: 400 31px/1.2 var(--serif); letter-spacing: -0.01em; }
+.empty { max-width: 420px; margin: 13vh auto 0; text-align: center; }
+.hero { position: relative; display: grid; place-items: center; width: 220px; height: 220px; margin: 0 auto 6px; }
+.hero::before {   /* a faint light behind the orb */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--halo) 0%, transparent 65%);
+}
+.hero .orb { position: relative; }
+.empty h1 {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+.empty p { margin: 8px auto 0; max-width: 300px; font-size: 17px; color: var(--text-2); }
 
 /* ---------- message box ---------- */
 
@@ -261,7 +279,7 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
   border: 0;
   border-radius: 10px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 .send:active { opacity: 0.8; }
 .send svg { width: 17px; height: 17px; stroke-width: 2.3; }
@@ -297,7 +315,7 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
 }
 @keyframes slide { from { transform: translateX(-100%); } }
 @keyframes fade { from { opacity: 0; } }
-.drawer-panel h2 { margin: 0 8px; font: 400 26px/1.2 var(--serif); }
+.drawer-panel h2 { margin: 0 8px; font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
 .drawer-panel .hint { margin: 4px 8px 12px; }
 #chat-list { flex: 1; list-style: none; margin: 0; padding: 0; overflow-y: auto; }
 #chat-list li { display: flex; align-items: center; border-radius: 10px; }

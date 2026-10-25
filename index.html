@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Nexus</title>
 <meta name="description" content="A private chat for your own notes.">
-<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0c14" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -34,7 +34,7 @@
   <form id="composer" autocomplete="off">
     <div id="attachments" hidden></div>
     <div class="box">
-      <textarea id="input" rows="1" placeholder="How can I help you today?" aria-label="Message"></textarea>
+      <textarea id="input" rows="1" placeholder="Message Nexus" aria-label="Message"></textarea>
       <div class="tools">
         <label class="tool attach" aria-label="Add photo">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -70,6 +70,15 @@
       <h2>Settings</h2>
       <button class="text-btn strong" type="submit">Save</button>
     </div>
+
+    <p class="group-title">You</p>
+    <div class="group">
+      <label class="cell">
+        <span>Name</span>
+        <input name="name" placeholder="From your notes" autocapitalize="words" autocorrect="off" spellcheck="false">
+      </label>
+    </div>
+    <p class="group-foot">Used in the greeting. Leave empty to take it from your notes.</p>
 
     <p class="group-title">Keys</p>
     <div class="group">

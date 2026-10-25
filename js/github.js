@@ -19,6 +19,12 @@ export class Repo {
     return this.text.size;
   }
 
+  // "about-sam.md" at the top of the notes → "Sam", for the greeting.
+  get ownerName() {
+    const m = this.tree.map((e) => e.path.match(/^about-([^/.]+).md$/i)).find(Boolean);
+    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : '';
+  }
+
   async api(path, opts = {}) {
     const res = await fetch(API + path, {
       cache: 'no-store',

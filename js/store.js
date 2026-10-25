@@ -15,6 +15,7 @@ export const DEFAULTS = {
   openrouterModels: 'thinkingmachines/inkling:free, nvidia/nemotron-3-ultra-550b-a55b:free',
   thinking: 'medium',
   preload: 'AGENTS.md, current-status.md, about-*.md',
+  name: '',                                // for the greeting; empty = taken from an about-<name>.md file
 };
 
 export function loadSettings() {

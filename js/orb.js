@@ -16,7 +16,9 @@ function accentTint() {
 
 export class Orb {
   // `preset` is a tuned design size (64 for avatars, 20 for inline text); `px` is the size on screen.
-  constructor({ preset = 64, px = preset, state = 'working' } = {}) {
+  // `colors` paints the dots with a gradient (keeping their depth shading) instead of one tint.
+  constructor({ preset = 64, px = preset, state = 'working', colors } = {}) {
+    this.colors = colors;
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'orb';
     this.canvas.setAttribute('aria-hidden', 'true');
@@ -56,7 +58,33 @@ export class Orb {
     ctx.setTransform(k, 0, 0, k, 0, 0);
     ctx.clearRect(0, 0, this.preset, this.preset);
     const t = reducedQuery.matches ? 0.6 : (performance.now() / 1000) * this.speed;
-    paintFrame(ctx, this.frame(this.preset, t, this.opts), darkQuery.matches, this.tint);
+    paintFrame(ctx, this.frame(this.preset, t, this.opts), darkQuery.matches, this.colors ? undefined : this.tint);
+    if (this.colors) this.colorize(ctx, side);
+  }
+
+  // Lay a gradient over the dots only. On dark backgrounds the dots are light, so multiplying keeps
+  // their near/far shading; on light backgrounds they are dark, so the colour goes on top instead.
+  colorize(ctx, side) {
+    this.off ??= document.createElement('canvas');
+    if (this.off.width !== side) {
+      this.off.width = side;
+      this.off.height = side;
+    }
+    const o = this.off.getContext('2d');
+    o.globalCompositeOperation = 'source-over';
+    o.clearRect(0, 0, side, side);
+    const g = o.createLinearGradient(0, side, side, 0);
+    this.colors.forEach((c, i) => g.addColorStop(i / (this.colors.length - 1), c));
+    o.fillStyle = g;
+    o.fillRect(0, 0, side, side);
+    o.globalCompositeOperation = 'destination-in';
+    o.drawImage(this.canvas, 0, 0);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = darkQuery.matches ? 'multiply' : 'source-atop';
+    ctx.globalAlpha = darkQuery.matches ? 1 : 0.85;
+    ctx.drawImage(this.off, 0, 0);
+    ctx.restore();
   }
 
   loop() {
