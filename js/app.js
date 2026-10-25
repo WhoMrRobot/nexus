@@ -3,6 +3,7 @@
 import { DEFAULTS, loadSettings, saveSettings, dropPinData, chats, fileCache } from './store.js';
 import { Repo, IMAGE, bytesToBase64 } from './github.js';
 import { stream, checkModel } from './gemini.js';
+import * as openrouter from './openrouter.js';
 import { renderMarkdown, escapeHtml } from './markdown.js';
 import { TOOLS, INBOX, INBOX_HEADER, systemPrompt } from './prompt.js';
 
@@ -24,7 +25,10 @@ let busy = false;
 let controller = null;
 let notice = null;         // { kind: 'error' | 'note', text, retry }
 let pending = [];          // photos picked for the next message: [base64 jpeg]
-const quirks = { think: {}, photoParts: 'nested' };   // request shapes learned at run time
+// Request shapes learned at run time; the thinking setting each model accepts is remembered, so a
+// rejected request (which still counts against the free limit) isn't repeated after every restart.
+const quirks = { think: (() => { try { return JSON.parse(localStorage.getItem('nexus.think') || '{}'); } catch { return {}; } })(), photoParts: 'nested' };
+let deepNext = false;      // the Deep button: the next message uses the Deep model
 let liveNote = '';         // shown in the loader while waiting, e.g. for the free limit
 let turnStarted = 0;
 let hiddenDuringTurn = false;   // iOS pauses a web app in the background and drops its connections
@@ -184,7 +188,8 @@ async function submit(e) {
   notice = null;
   resumePending = false;
   repair(chat.history);   // a new message leaves an unfinished earlier answer behind
-  chat.history.push({ role: 'user', parts, _time: Date.now() });
+  chat.history.push({ role: 'user', parts, _time: Date.now(), ...(deepNext ? { _deep: true } : {}) });
+  setDeep(false);
   renderAll();
   scrollToEnd();
   await runAgent();
@@ -198,13 +203,14 @@ async function runAgent(resumes = 0) {
   liveNote = resumes ? 'Reconnecting' : '';
   updateSend();
   renderLive();
-  const turn = { model: settings.model, fellBack: false, stripSignatures: false, waits: 0, round: 0 };
+  const deep = Boolean(lastUserMessage()?._deep);
+  const turn = { chain: modelChain(deep), step: 0, deep, stripSignatures: false, waits: 0, round: 0, why: '' };
   let current = null;   // the reply being written, dropped if its request fails
   let aborted = false;
   let resume = false;
   try {
     const r = await loadRepo();
-    const system = await buildSystem(r);
+    const system = await buildSystem(r, userText(lastUserMessage()));
     for (let round = 0; round < 12; round++) {
       turn.round = round + 1;
       const reply = { role: 'model', parts: [] };
@@ -214,7 +220,7 @@ async function runAgent(resumes = 0) {
       current = null;
       if (!reply.parts.length) {
         chat.history.pop();
-        throw new Error('Gemini sent an empty reply. Try again.');
+        throw new Error('The model sent an empty reply. Try again.');
       }
       const calls = reply.parts.filter((p) => p.functionCall);
       if (!calls.length) {
@@ -290,22 +296,49 @@ function repair(history, keepResults = false) {
   }
 }
 
-async function buildSystem(r) {
+async function buildSystem(r, message) {
   const files = [];
   for (const path of r.expand(settings.preload)) {
     try { files.push({ path, text: await r.readText(path) }); } catch {}
   }
+  const found = r.relevant(message, { exclude: files.map((f) => f.path) });
+  if (found.length) note(`search sent along: ${found.map((f) => f.path).join(', ')}`);
   const now = new Date().toLocaleString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
   });
-  return systemPrompt({ files, now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  return systemPrompt({ files, found, now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
 }
 
-function requestBody(system, turn) {
-  const level = quirks.think[turn.model] ?? 0;
+// The models to try for one answer, in order: each is used until it fails, then the next.
+function modelChain(deep) {
+  const chain = [];
+  const add = (provider, model) => {
+    if (model && !chain.some((m) => m.provider === provider && m.model === model)) chain.push({ provider, model });
+  };
+  if (deep) add('gemini', settings.deepModel);
+  add('gemini', settings.model);
+  add('gemini', settings.fallbackModel);
+  if (settings.openrouterKey) add('openrouter', settings.openrouterModels);
+  return chain;
+}
+
+// "gemini-3.5-flash-lite" → "Gemini 3.5 Flash-Lite"; "thinkingmachines/inkling:free" → "inkling".
+function modelLabel(target) {
+  const id = String(typeof target === 'string' ? target : target?.model || '');
+  if (target?.provider === 'openrouter' && !id.includes(':free,') && id.includes(',')) return 'OpenRouter';
+  if (id.startsWith('gemini-')) {
+    return `Gemini ${id.slice(7).split('-').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ').replace('Flash Lite', 'Flash-Lite')}`;
+  }
+  const name = id.split(',')[0].trim().split('/').pop().replace(/:free$/, '');
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function requestBody(system, turn, model) {
+  const level = quirks.think[model] ?? 0;
+  const wanted = turn.deep && model === settings.deepModel ? 'high' : settings.thinking;
   const thinking = [
-    { includeThoughts: true, thinkingLevel: settings.thinking },
-    { includeThoughts: true, thinkingLevel: settings.thinking.toUpperCase() },
+    { includeThoughts: true, thinkingLevel: wanted },
+    { includeThoughts: true, thinkingLevel: wanted.toUpperCase() },
     { includeThoughts: true },
     null,
   ][level];
@@ -319,15 +352,34 @@ function requestBody(system, turn) {
 
 async function callModel(reply, system, turn) {
   for (let attempt = 0; ; attempt++) {
+    const target = turn.chain[turn.step];
+    if (!target) throw new Error('No model is set up. Check the Gemini key in Settings.');
     const started = Date.now();
     let first = 0;
     let usage = null;
     let finish = '';
+    let answeredBy = '';
     try {
-      const body = requestBody(system, turn);
-      const size = JSON.stringify(body, (k, v) => (k === 'data' ? '' : v)).length;
-      note(`→ ${turn.model} round ${turn.round}: ${Math.round(size / 1000)}k chars sent`);
-      for await (const chunk of stream({ key: settings.geminiKey, model: turn.model, body, signal: controller.signal })) {
+      let chunks;
+      let size;
+      if (target.provider === 'openrouter') {
+        const contents = serialize(chat.history, turn);
+        size = system.length + JSON.stringify(contents, (k, v) => (k === 'data' ? '' : v)).length;
+        chunks = openrouter.stream({
+          key: settings.openrouterKey,
+          models: target.model.split(',').map((m) => m.trim()),
+          system,
+          contents,
+          tools: TOOLS,
+          signal: controller.signal,
+        });
+      } else {
+        const body = requestBody(system, turn, target.model);
+        size = JSON.stringify(body, (k, v) => (k === 'data' ? '' : v)).length;
+        chunks = stream({ key: settings.geminiKey, model: target.model, body, signal: controller.signal });
+      }
+      note(`→ ${modelLabel(target)} round ${turn.round}: ${Math.round(size / 1000)}k chars sent`);
+      for await (const chunk of chunks) {
         if (!first) {
           first = Date.now();
           note(`← first data after ${secondsSince(started)}s`);
@@ -339,33 +391,36 @@ async function callModel(reply, system, turn) {
         if (cand?.finishReason) finish = cand.finishReason;
         if (cand?.finishReason && cand.finishReason !== 'STOP') reply._finish = cand.finishReason;
         if (chunk.usageMetadata) usage = chunk.usageMetadata;
+        if (target.provider === 'openrouter' && chunk.modelVersion) answeredBy = chunk.modelVersion;
         renderLive();
       }
       const u = usage || {};
       note(`✓ ${secondsSince(started)}s ${finish || 'no finish reason'} · tokens in ${u.promptTokenCount ?? '?'}, out ${u.candidatesTokenCount ?? '?'}, thinking ${u.thoughtsTokenCount ?? 0}`);
-      if (turn.fellBack) Object.assign(reply, { _model: turn.model, _why: turn.why });
+      reply._by = answeredBy || target.model;
+      if (turn.step > 0) Object.assign(reply, { _model: modelLabel(answeredBy || target), _why: `${modelLabel(turn.chain[0])} ${turn.why}` });
       return;
     } catch (err) {
-      note(`✗ ${turn.model} after ${secondsSince(started)}s: ${err.status ?? ''} ${String(err.message).slice(0, 300)}`);
-      if (controller.signal.aborted || reply.parts.length || attempt >= 5) throw err;
+      note(`✗ ${modelLabel(target)} after ${secondsSince(started)}s: ${err.status ?? ''} ${String(err.message).slice(0, 300)}`);
+      if (controller.signal.aborted || reply.parts.length || attempt >= 6) throw err;
       const msg = String(err.message);
-      const canFallBack = !turn.fellBack && settings.fallbackModel && settings.fallbackModel !== turn.model;
-      if (err.status === 400 && /thinking/i.test(msg) && (quirks.think[turn.model] ?? 0) < 3) {
-        quirks.think[turn.model] = (quirks.think[turn.model] ?? 0) + 1;
-      } else if (err.status === 400 && quirks.photoParts === 'nested' && /function.?response|parts/i.test(msg)) {
+      const next = turn.chain[turn.step + 1];
+      const gemini = target.provider === 'gemini';
+      if (gemini && err.status === 400 && /thinking/i.test(msg) && (quirks.think[target.model] ?? 0) < 3) {
+        quirks.think[target.model] = (quirks.think[target.model] ?? 0) + 1;
+        try { localStorage.setItem('nexus.think', JSON.stringify(quirks.think)); } catch {}
+      } else if (gemini && err.status === 400 && quirks.photoParts === 'nested' && /function.?response|parts/i.test(msg)) {
         quirks.photoParts = 'sibling';
-      } else if (err.status === 400 && /signature/i.test(msg) && !turn.stripSignatures) {
+      } else if (gemini && err.status === 400 && /signature/i.test(msg) && !turn.stripSignatures) {
         turn.stripSignatures = true;
-      } else if (([429, 500, 503].includes(err.status) || err.status === 'timeout') && canFallBack) {
-        turn.model = settings.fallbackModel;
-        turn.fellBack = true;
-        turn.why = err.status === 'timeout' ? 'didn’t respond' : err.status === 429 ? 'hit its free limit' : 'was overloaded (Google’s side, not your limit)';
+      } else if (([429, 500, 502, 503].includes(err.status) || err.status === 'timeout') && next) {
+        turn.step++;
         turn.stripSignatures = true;
-        liveNote = err.status === 'timeout' ? `No reply, trying ${turn.model}` : `Limit hit, trying ${turn.model}`;
+        turn.why = err.status === 'timeout' ? 'didn’t respond' : err.status === 429 ? 'hit its free limit' : 'was overloaded (not your limit)';
+        liveNote = `${modelLabel(target)} ${err.status === 429 ? 'is at its limit' : 'is unavailable'}, trying ${modelLabel(next)}`;
       } else if (err.status === 429 && err.retryDelay && err.retryDelay <= 60 && turn.waits < 2) {
         turn.waits++;
         await countdown(err.retryDelay, 'Free limit reached, waiting');
-      } else if ([500, 503].includes(err.status)) {
+      } else if ([500, 502, 503].includes(err.status)) {
         await sleep(1500 * (attempt + 1));
       } else {
         throw err;
@@ -609,6 +664,7 @@ function renderExchange({ user, steps }, live) {
   let thoughts = '';
   let answeredAt = 0;
   let took = 0;
+  let by = '';
   for (const c of steps) {
     if (c.role === 'model') {
       let answer = '';
@@ -620,7 +676,8 @@ function renderExchange({ user, steps }, live) {
       if (answer.trim()) answers.push(answer);
       if (c._time) answeredAt = c._time;
       if (c._took) took = c._took;
-      if (c._model) notes.push(`Answered by ${c._model}: the main model ${c._why || 'hit its limit'}.`);
+      if (c._by) by = modelLabel(c._by);
+      if (c._model) notes.push(`Answered by ${c._model}: ${c._why || 'the main model hit its limit'}.`);
       if (c._finish) notes.push(finishNote(c._finish));
     } else {
       for (const p of c.parts) {
@@ -636,14 +693,14 @@ function renderExchange({ user, steps }, live) {
   const waiting = live && (pendingAct || !streamingAnswer);
   return `<section class="exchange">
     <div class="msg user">${photos ? `<div class="photos">${photos}</div>` : ''}${text ? `<div class="text">${escapeHtml(text)}</div>` : ''}</div>
-    ${user._time ? `<p class="time sent">${escapeHtml(clock(user._time))}</p>` : ''}
+    ${user._time ? `<p class="time sent">${user._deep ? '<span class="tag">Deep</span>' : ''}${escapeHtml(clock(user._time))}</p>` : ''}
     <div class="msg assistant">
       ${acts.length ? `<ul class="activity">${acts.map(renderAct).join('')}</ul>` : ''}
       ${thoughts ? `<details class="thinking"><summary>Thinking</summary><div>${renderMarkdown(thoughts)}</div></details>` : ''}
       ${answers.length ? `<div class="answer">${renderMarkdown(answers.join('\n\n'))}</div>` : ''}
-      ${waiting ? `<div class="loader"><i></i><i></i><i></i><span>${escapeHtml(liveNote || (pendingAct ? actLabel(pendingAct.call) : 'Thinking'))}…</span><span class="elapsed"></span></div>` : ''}
-      ${notes.map((n) => `<p class="note">${escapeHtml(n)}</p>`).join('')}
-      ${answeredAt && !live ? `<p class="time">${escapeHtml(clock(answeredAt))}${took ? ` · took ${took}s` : ''}</p>` : ''}
+      ${waiting ? `<div class="loader"><span class="label">${escapeHtml(liveNote || (pendingAct ? actLabel(pendingAct.call) : 'Thinking'))}…</span><span class="elapsed"></span></div>` : ''}
+      ${[...new Set(notes)].map((n) => `<p class="note">${escapeHtml(n)}</p>`).join('')}
+      ${answeredAt && !live ? `<p class="time">${escapeHtml([clock(answeredAt), took ? `${took}s` : '', by].filter(Boolean).join(' · '))}</p>` : ''}
     </div>
   </section>`;
 }
@@ -691,7 +748,7 @@ function emptyState() {
   return `<div class="empty">
     <img src="icons/icon-192.png" alt="" width="64" height="64">
     <h1>Nexus</h1>
-    <p>Ask about anything in your notes, or tell me what happened. New information goes to your inbox for the PC to file.</p>
+    <p>Ask about anything in your notes, or tell me what’s new. Tap Deep for the harder questions.</p>
     <div class="chips">${prompts.map((p) => `<button type="button" data-prompt="${escapeHtml(p)}">${escapeHtml(p)}</button>`).join('')}</div>
   </div>`;
 }
@@ -713,12 +770,19 @@ function updateSend() {
 function friendly(err) {
   const s = err?.status;
   if (err?.source === 'gemini') {
-    if (s === 429) return 'Gemini’s free limit is used up for now (on the backup model too). Try again in a minute, or tomorrow if it was the daily limit.';
+    if (s === 429) return `Gemini’s free limits are used up for now. Try again in a minute; the daily limits reset at ${dailyReset()}. Adding an OpenRouter key in Settings gives you a backup.`;
     if (s === 400 && /api key/i.test(err.message)) return 'The Gemini key was refused. Check it in Settings.';
     if (s === 401 || s === 403) return 'The Gemini key was refused. Check it in Settings.';
     if (s === 404) return `Gemini doesn't know the model "${settings.model}". Check the model name in Settings.`;
     if (s === 'timeout') return 'Gemini stopped answering (nothing came back for 75 seconds), on the backup model too. Tap Retry, or set Thinking to Low.';
     if (s === 500 || s === 503) return 'Gemini is overloaded right now (Google’s side, not your limit). Tap Retry in a minute.';
+  }
+  if (err?.source === 'openrouter') {
+    if (s === 401) return 'OpenRouter refused the key. Check it in Settings.';
+    if (s === 402) return 'OpenRouter wants credit for that model. Use models ending in :free (Settings → Advanced).';
+    if (s === 404 && /polic|endpoint/i.test(err.message)) return 'OpenRouter blocked the free models: on openrouter.ai go to Settings → Privacy and allow free models.';
+    if (s === 429) return `Every free limit is used up for now (Gemini and OpenRouter). Gemini’s daily limits reset at ${dailyReset()}.`;
+    if (s === 'timeout') return 'OpenRouter stopped answering (nothing for 75 seconds). Tap Retry.';
   }
   if (err?.source === 'github') {
     if (s === 401) return 'GitHub refused the token. It may have expired: make a new one and paste it in Settings.';
@@ -733,10 +797,29 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Gemini's daily limits reset at midnight Pacific time; shown in the phone's own time.
+function dailyReset() {
+  const start = Math.ceil(Date.now() / 900_000) * 900_000;
+  for (let t = start; t < start + 26 * 3_600_000; t += 900_000) {
+    const pacific = new Date(t).toLocaleTimeString('en-GB', { timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', hour12: false });
+    if (pacific === '00:00') return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  return 'midnight Pacific time';
+}
+
+function setDeep(on) {
+  deepNext = on;
+  const btn = $('#btn-deep');
+  btn.classList.toggle('on', on);
+  btn.setAttribute('aria-pressed', String(on));
+  input.placeholder = on ? `Deep answer with ${modelLabel(settings.deepModel)}…` : 'Message';
+}
+
 // ---------- composer, drawer, settings ----------
 
 function bindUi() {
   $('#composer').addEventListener('submit', submit);
+  $('#btn-deep').addEventListener('click', () => setDeep(!deepNext));
   input.addEventListener('input', autosize);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && matchMedia('(hover: hover) and (pointer: fine)').matches) submit(e);
@@ -802,6 +885,15 @@ function bindUi() {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const next = readForm();
+    if (!next.geminiKey || !next.githubToken) {
+      $('#test-result').textContent = 'Add the Gemini key and the GitHub token first.';
+      return;
+    }
+    if (!next.repo) {
+      $('#advanced').open = true;
+      $('#test-result').textContent = 'Add the repository under Advanced (owner/name).';
+      return;
+    }
     const reload = ['githubToken', 'repo', 'branch'].some((k) => next[k] !== settings[k]);
     settings = next;
     saveSettings(settings);
@@ -812,6 +904,7 @@ function bindUi() {
   $('#btn-test').addEventListener('click', testConnection);
   $('#btn-log').addEventListener('click', () => {
     $('#test-result').textContent = events.length ? events.slice(-40).join('\n') : 'Nothing logged yet.';
+    $('#test-result').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   });
   $('#btn-refresh').addEventListener('click', async () => {
     await fileCache.clear().catch(() => {});
@@ -899,13 +992,23 @@ async function testConnection() {
       lines.push(`GitHub ✗ ${friendly(err)}`);
     }
   }
-  for (const model of [s.model, s.fallbackModel].filter(Boolean)) {
+  for (const model of [...new Set([s.model, s.fallbackModel, s.deepModel].filter(Boolean))]) {
     try {
       const m = await checkModel(s.geminiKey, model);
-      lines.push(`Gemini ✓ ${m.displayName || model}`);
+      lines.push(`Gemini ✓ ${m.displayName || model}${model === s.deepModel ? ' (Deep)' : ''}`);
     } catch (err) {
       lines.push(`Gemini ✗ ${model}: ${err.status === 404 ? 'model not found' : friendly(err)}`);
     }
+  }
+  if (s.openrouterKey) {
+    try {
+      const key = await openrouter.checkKey(s.openrouterKey);
+      lines.push(`OpenRouter ✓ key works${key.is_free_tier ? ' (free: about 50 requests a day)' : ''}`);
+    } catch (err) {
+      lines.push(`OpenRouter ✗ ${friendly(err)}`);
+    }
+  } else {
+    lines.push('OpenRouter – no key (optional backup)');
   }
   out.textContent = lines.join('\n');
 }

@@ -125,6 +125,35 @@ export class Repo {
     return { matches: hits.length, showing: Math.min(max, hits.length), note, results: hits.slice(0, max) };
   }
 
+  // The Markdown files whose words best match a message (rare words count most), so they can be sent
+  // with the question and the model can often answer without asking for files first.
+  relevant(message, { exclude = [], max = 3, budget = 40_000 } = {}) {
+    const terms = [...new Set(String(message).toLowerCase().match(/[\p{L}\p{M}\p{N}]{3,}/gu) || [])]
+      .filter((t) => !STOP.has(t)).slice(0, 25);
+    const files = [...this.text.entries()].filter(([p]) => /\.md$/i.test(p) && !exclude.includes(p));
+    if (!terms.length || !files.length) return [];
+    const lower = new Map(files.map(([p, t]) => [p, t.toLowerCase()]));
+    const weight = Object.fromEntries(terms.map((t) => {
+      const df = files.filter(([p]) => lower.get(p).includes(t)).length;
+      return [t, df ? Math.log(1 + files.length / df) : 0];
+    }));
+    const ranked = files
+      .map(([path, text]) => ({ path, text, score: terms.reduce((s, t) => s + (lower.get(path).includes(t) ? weight[t] : 0), 0) }))
+      .filter((f) => f.score >= 2)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, max);
+    const out = [];
+    let left = budget;
+    for (const f of ranked) {
+      const text = f.text.length <= Math.min(left, 30_000) ? f.text : snippets(f.text, terms, Math.min(left, 8_000));
+      if (!text) continue;
+      out.push({ path: f.path, text, partial: text !== f.text });
+      left -= text.length;
+      if (left < 2_000) break;
+    }
+    return out;
+  }
+
   async readText(path) {
     const e = this.find(path);
     if (!e) {
@@ -185,6 +214,33 @@ export class Repo {
     }
     throw new Error('GitHub: could not save after 3 tries (the file kept changing).');
   }
+}
+
+// Common words that say nothing about which file is relevant.
+const STOP = new Set(`the and for are but not you your yours with have has had was were what when where who whom why how
+can could should would will shall this that these those from about into onto just like then than them they there their
+been being does did doing done all any some more most very also only other our ours out over its it's i'm i've me my mine
+his her hers him she he we us today now tell know think please want need make get got give one two let lets yes no okay
+which while because so such each every much many few here thing things something anything really actually maybe
+still even ever never always again same able sure way time day days`.split(/\s+/));
+
+// Lines containing the words, with one line of context around each, up to `limit` characters.
+function snippets(text, terms, limit) {
+  const lines = text.split('\n');
+  const keep = new Set();
+  lines.forEach((l, i) => {
+    const low = l.toLowerCase();
+    if (terms.some((t) => low.includes(t))) for (let j = i - 1; j <= i + 1; j++) if (j >= 0 && j < lines.length) keep.add(j);
+  });
+  let out = '';
+  let prev = -2;
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    const piece = `${i !== prev + 1 ? '…\n' : ''}${lines[i]}\n`;
+    if (out.length + piece.length > limit) break;
+    out += piece;
+    prev = i;
+  }
+  return out.trim();
 }
 
 export function normalize(path) {

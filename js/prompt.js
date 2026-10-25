@@ -14,6 +14,7 @@ const RULES = `You are Nexus, a private assistant on the user's phone. You answe
 Files
 - AGENTS.md, included below with a few other files, is the map and the rules. Follow its rules on privacy, tone and how facts are recorded.
 - The files included below often answer the question on their own: then answer straight away, without tools.
+- Files under "Found by search" were picked by matching words in the user's latest message. They may be excerpts (marked) or not relevant at all; read other files when they don't answer it.
 - Otherwise pick files from the map and read them with read_file, asking for all of them in one call (it takes several paths). Open only what the question needs. When you don't know where a fact lives, use search_files: it matches words in every Markdown file.
 - Each tool call costs the user's limited free quota, so use as few calls as you can.
 - Photos: find them through the image index that AGENTS.md names, then call view_photos.
@@ -36,10 +37,13 @@ Style
 - Put the answer or verdict in the first line: the user reads the first lines and skims the rest. Then short bullets or short paragraphs.
 - Be honest and specific, warm but not flattering.`;
 
-export function systemPrompt({ files, now, timeZone }) {
+export function systemPrompt({ files, found = [], now, timeZone }) {
   const included = files.map((f) => `===== ${f.path} =====\n${f.text}`).join('\n\n');
-  // The time goes last so the long, unchanging part stays the same between requests (cheaper and faster).
-  return `${RULES}\n\n${included}\n\n===== Now =====\n${now} (${timeZone}).`;
+  const searched = found.length
+    ? `\n\n===== Found by search =====\n${found.map((f) => `----- ${f.path}${f.partial ? ' (excerpts)' : ''} -----\n${f.text}`).join('\n\n')}`
+    : '';
+  // The changing parts go last so the long, unchanging part stays the same between requests.
+  return `${RULES}\n\n${included}${searched}\n\n===== Now =====\n${now} (${timeZone}).`;
 }
 
 export const TOOLS = [

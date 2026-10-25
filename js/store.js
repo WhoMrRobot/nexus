@@ -3,22 +3,34 @@
 const SETTINGS = 'nexus.settings';
 
 export const DEFAULTS = {
+  v: 2,
   geminiKey: '',
   githubToken: '',
   repo: '',
   branch: 'main',
-  model: 'gemini-3.8-flash',
-  fallbackModel: 'gemini-3.5-flash-lite',
+  model: 'gemini-3.5-flash-lite',          // everyday answers (about 500 free a day)
+  fallbackModel: 'gemini-3.1-flash-lite',  // its own separate daily allowance
+  deepModel: 'gemini-3.8-flash',           // the Deep button (about 20 free a day)
+  openrouterKey: '',
+  openrouterModels: 'thinkingmachines/inkling:free, nvidia/nemotron-3-ultra-550b-a55b:free',
   thinking: 'medium',
   preload: 'AGENTS.md, current-status.md, about-*.md',
 };
 
 export function loadSettings() {
+  let saved;
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(SETTINGS) || '{}') };
+    saved = JSON.parse(localStorage.getItem(SETTINGS) || '{}');
   } catch {
-    return { ...DEFAULTS };
+    saved = {};
   }
+  // Version 2 (25 Oct): Flash-Lite became the everyday model and 3.8 Flash moved to the Deep button.
+  if ((saved.v || 1) < 2) {
+    if (!saved.model || saved.model === 'gemini-3.8-flash') saved.model = DEFAULTS.model;
+    if (!saved.fallbackModel || saved.fallbackModel === 'gemini-3.5-flash-lite') saved.fallbackModel = DEFAULTS.fallbackModel;
+    saved.v = 2;
+  }
+  return { ...DEFAULTS, ...saved };
 }
 
 export function saveSettings(settings) {
